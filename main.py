@@ -15,8 +15,11 @@ from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Any
 
+from pathlib import Path
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
 from src.diary import DiaryWriter
@@ -402,6 +405,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="upaya-jivika", lifespan=lifespan)
 
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@app.get("/")
+def dashboard():
+    """Serve the live survival dashboard."""
+    return FileResponse(STATIC_DIR / "index.html")
+
 
 @app.get("/health")
 def health():
@@ -427,8 +438,15 @@ def status():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await ws_manager.connect(websocket)
+    loop = _loop
+    if loop is not None:
+        await websocket.send_json({"event": "status_snapshot", **loop.get_status()})
     try:
         while True:
             await websocket.receive_text()
+            if loop is not None:
+                await websocket.send_json(
+                    {"event": "status_snapshot", **loop.get_status()}
+                )
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)

@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>upaya-jivika — Survival Dashboard</title>
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --bg-elevated: #12121a;
+      --fg: #e8e8ed;
+      --fg-muted: #8a8a9a;
+      --accent: #00d4aa;
+      --accent-dim: #00d4aa33;
+      --danger: #ff3366;
+      --danger-dim: #ff336633;
+      --warning: #ffaa00;
+      --warning-dim: #ffaa0033;
+      --info: #00aaff;
+      --border: #2a2a3a;
+      --card: #16161f;
+      --mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+      --sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f5f5f8;
+        --bg-elevated: #ffffff;
+        --fg: #1a1a2e;
+        --fg-muted: #6a6a7a;
+        --accent: #009977;
+        --accent-dim: #00997722;
+        --danger: #cc0033;
+        --danger-dim: #cc003322;
+        --warning: #cc8800;
+        --warning-dim: #cc880022;
+        --info: #0077cc;
+        --border: #e0e0eb;
+        --card: #ffffff;
+      }
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--fg);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    .mono { font-family: var(--mono); }
+
+    /* Layout */
+    .app {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px 16px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 32px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .title-block h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .title-block .subtitle {
+      color: var(--fg-muted);
+      font-size: 0.875rem;
+      margin-top: 4px;
+    }
+
+    .connection-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.75rem;
+      font-family: var(--mono);
+      color: var(--fg-muted);
+    }
+
+    .connection-status .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--danger);
+      transition: background 0.3s;
+    }
+
+    .connection-status.connected .dot { background: var(--accent); }
+    .connection-status.connecting .dot { background: var(--warning); animation: pulse 1s infinite; }
+
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* Grid */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+      margin-bottom: 24px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      transition: border-color 0.3s, box-shadow 0.3s;
+    }
+
+    .card:hover { border-color: var(--accent-dim); }
+
+    .card h2 {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--fg-muted);
+      margin-bottom: 12px;
+    }
+
+    /* Life Number */
+    .life-number { grid-column: span 1; }
+    .life-number .value {
+      font-size: 4rem;
+      font-weight: 800;
+      font-family: var(--mono);
+      line-height: 1;
+      background: linear-gradient(135deg, var(--accent), var(--info));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    /* Survival State */
+    .survival-state { grid-column: span 1; }
+    .state-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 20px;
+      border-radius: 100px;
+      font-weight: 600;
+      font-size: 1rem;
+      transition: all 0.4s ease;
+    }
+
+    .state-badge .icon { font-size: 1.25rem; }
+
+    /* State variants */
+    .state-thriving .state-badge { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); }
+    .state-surviving .state-badge { background: var(--warning-dim); color: var(--warning); border: 1px solid var(--warning); }
+    .state-struggling .state-badge { background: #ff880033; color: #ff8800; border: 1px solid #ff8800; }
+    .state-critical .state-badge { background: var(--danger-dim); color: var(--danger); border: 1px solid var(--danger); animation: pulse-bg 1.5s infinite; }
+    .state-terminal .state-badge { background: var(--danger-dim); color: var(--danger); border: 1px solid var(--danger); animation: pulse-bg 0.5s infinite; }
+    .state-dead .state-badge { background: #1a1a1a; color: var(--fg-muted); border: 1px solid var(--border); }
+
+    @keyframes pulse-bg { 0%, 100% { box-shadow: 0 0 0 0 var(--danger-dim); } 50% { box-shadow: 0 0 20px 4px var(--danger-dim); } }
+
+    /* Debt Gauge */
+    .debt-gauge { grid-column: span 1; }
+    .gauge-container { position: relative; }
+    .gauge-svg { width: 100%; height: 120px; transform: rotate(-90deg); }
+    .gauge-bg { fill: none; stroke: var(--border); stroke-width: 12; }
+    .gauge-progress { fill: none; stroke-width: 12; stroke-linecap: round; transition: stroke-dashoffset 0.8s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.3s; }
+    .gauge-center {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      text-align: center;
+    }
+    .gauge-value { font-size: 2rem; font-weight: 700; font-family: var(--mono); }
+    .gauge-label { font-size: 0.7rem; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 4px; }
+    .death-line { font-size: 0.65rem; color: var(--danger); margin-top: 8px; font-family: var(--mono); }
+
+    /* Wallet */
+    .wallet { grid-column: span 1; }
+    .wallet-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .wallet-item { text-align: center; padding: 16px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border); }
+    .wallet-item.locked { border-color: var(--danger-dim); }
+    .wallet-item.free { border-color: var(--accent-dim); }
+    .wallet-label { font-size: 0.65rem; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+    .wallet-value { font-size: 1.5rem; font-weight: 700; font-family: var(--mono); }
+    .wallet-value.locked { color: var(--danger); }
+    .wallet-value.free { color: var(--accent); }
+    .wallet-value.debt { color: var(--warning); }
+
+    /* Total Earned */
+    .total-earned { grid-column: span 1; }
+    .total-earned .value { font-size: 2.5rem; font-weight: 700; font-family: var(--mono); color: var(--accent); }
+
+    /* Chart */
+    .debt-chart { grid-column: 1 / -1; }
+    .chart-wrapper { position: relative; height: 280px; }
+    #debtChart { width: 100%; height: 100%; }
+    .chart-legend { display: flex; gap: 16px; margin-top: 12px; font-size: 0.75rem; color: var(--fg-muted); flex-wrap: wrap; }
+    .legend-item { display: flex; align-items: center; gap: 6px; }
+    .legend-color { width: 12px; height: 12px; border-radius: 2px; }
+
+    /* Event Feed */
+    .event-feed { grid-column: 1 / -1; }
+    .feed-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .feed-controls { display: flex; gap: 8px; }
+    .feed-btn { padding: 6px 12px; font-size: 0.7rem; font-family: var(--mono); background: var(--bg); border: 1px solid var(--border); color: var(--fg-muted); border-radius: 6px; cursor: pointer; transition: all 0.2s; }
+    .feed-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .feed-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+
+    .event-list { max-height: 300px; overflow-y: auto; font-family: var(--mono); font-size: 0.75rem; }
+    .event-item { display: flex; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--border); transition: background 0.2s; animation: slideIn 0.3s ease; }
+    .event-item:last-child { border-bottom: none; }
+    .event-item:hover { background: var(--bg); }
+    .event-time { color: var(--fg-muted); white-space: nowrap; min-width: 80px; }
+    .event-type { color: var(--info); min-width: 120px; text-transform: uppercase; font-size: 0.65rem; letter-spacing: 0.05em; }
+    .event-message { color: var(--fg); flex: 1; word-break: break-word; }
+    .event-item.death .event-message { color: var(--danger); font-weight: 600; }
+    .event-item.reincarnation .event-message { color: var(--accent); font-weight: 600; }
+    .event-item.debt_tick .event-type { color: var(--warning); }
+    .event-item.state_transition .event-type { color: var(--accent); }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(-10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Death overlay */
+    .death-overlay {
+      position: fixed; inset: 0; background: rgba(10, 10, 15, 0.95);
+      display: none; align-items: center; justify-content: center; z-index: 1000;
+      animation: fadeIn 0.5s ease;
+    }
+    .death-overlay.active { display: flex; }
+    .death-content { text-align: center; max-width: 400px; padding: 40px; animation: scaleIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); }
+    .death-icon { font-size: 5rem; margin-bottom: 16px; animation: float 2s ease-in-out infinite; }
+    .death-title { font-size: 2rem; font-weight: 700; color: var(--danger); margin-bottom: 8px; }
+    .death-subtitle { color: var(--fg-muted); margin-bottom: 24px; }
+    .death-stats { display: flex; justify-content: center; gap: 32px; margin-bottom: 32px; font-family: var(--mono); }
+    .death-stat .label { display: block; font-size: 0.7rem; color: var(--fg-muted); text-transform: uppercase; }
+    .death-stat .value { font-size: 1.5rem; font-weight: 700; color: var(--fg); }
+    .reborn-btn { padding: 14px 32px; font-size: 1rem; font-weight: 600; font-family: var(--sans); background: var(--accent); color: var(--bg); border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
+    .reborn-btn:hover { background: #00e8bb; transform: translateY(-2px); box-shadow: 0 8px 24px var(--accent-dim); }
+
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes scaleIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
+    @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+
+    /* Rebirth transition */
+    .rebirth-flash {
+      position: fixed; inset: 0; background: radial-gradient(circle at center, var(--accent-dim) 0%, transparent 70%);
+      opacity: 0; pointer-events: none; z-index: 999; transition: opacity 0.8s ease;
+    }
+    .rebirth-flash.active { opacity: 1; }
+
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    }
+
+    /* Scrollbar */
+    .event-list::-webkit-scrollbar { width: 6px; }
+    .event-list::-webkit-scrollbar-track { background: var(--bg); }
+    .event-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .event-list::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="title-block">
+        <h1>upaya-jivika</h1>
+        <div class="subtitle">Survival Dashboard — Life must earn to exist</div>
+      </div>
+      <div class="connection-status" id="connStatus">
+        <span class="dot"></span>
+        <span id="connText">Disconnected</span>
+      </div>
+    </header>
+
+    <div class="grid">
+      <!-- Life Number -->
+      <div class="card life-number">
+        <h2>Life Number</h2>
+        <div class="value mono" id="lifeNumber">—</div>
+      </div>
+
+      <!-- Survival State -->
+      <div class="card survival-state">
+        <h2>Survival State</h2>
+        <div class="state-badge" id="stateBadge">
+          <span class="icon" id="stateIcon">●</span>
+          <span id="stateText">Initialising...</span>
+        </div>
+      </div>
+
+      <!-- Debt Gauge -->
+      <div class="card debt-gauge">
+        <h2>Existence Debt</h2>
+        <div class="gauge-container">
+          <svg class="gauge-svg" viewBox="0 0 200 200">
+            <circle class="gauge-bg" cx="100" cy="100" r="80"></circle>
+            <circle class="gauge-progress" id="gaugeProgress" cx="100" cy="100" r="80"
+              stroke-dasharray="502.65" stroke-dashoffset="502.65"></circle>
+          </svg>
+          <div class="gauge-center">
+            <div class="gauge-value mono" id="debtValue">$0.00</div>
+            <div class="gauge-label">of $10.00 death line</div>
+            <div class="death-line mono" id="debtPct">0%</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Wallet -->
+      <div class="card wallet">
+        <h2>Wallet</h2>
+        <div class="wallet-grid">
+          <div class="wallet-item locked">
+            <div class="wallet-label">Locked Pool</div>
+            <div class="wallet-value locked mono" id="walletLocked">$0.00</div>
+          </div>
+          <div class="wallet-item free">
+            <div class="wallet-label">Free Pool</div>
+            <div class="wallet-value free mono" id="walletFree">$0.00</div>
+          </div>
+          <div class="wallet-item" style="grid-column: span 2;">
+            <div class="wallet-label">Current Debt</div>
+            <div class="wallet-value debt mono" id="walletDebt">$0.00</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Total Earned -->
+      <div class="card total-earned">
+        <h2>Total Earned (This Life)</h2>
+        <div class="value mono" id="totalEarned">$0.00</div>
+      </div>
+
+      <!-- Debt Chart -->
+      <div class="card debt-chart">
+        <h2>Debt Over Time</h2>
+        <div class="chart-wrapper">
+          <canvas id="debtChart"></canvas>
+        </div>
+        <div class="chart-legend">
+          <div class="legend-item">
+            <div class="legend-color" style="background: var(--danger);"></div>
+            <span>Debt</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color" style="background: var(--accent);"></div>
+            <span>Free Pool</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color" style="background: var(--warning);"></div>
+            <span>Locked Pool</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color" style="background: var(--border);"></div>
+            <span>Death Line ($10)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Event Feed -->
+      <div class="card event-feed">
+        <div class="feed-header">
+          <h2>Live Event Feed</h2>
+          <div class="feed-controls">
+            <button class="feed-btn active" data-filter="all">All</button>
+            <button class="feed-btn" data-filter="debt_tick">Debt Ticks</button>
+            <button class="feed-btn" data-filter="state_transition">State Changes</button>
+            <button class="feed-btn" data-filter="research_cycle">Research</button>
+            <button class="feed-btn" data-filter="death">Death</button>
+            <button class="feed-btn" data-filter="reincarnation">Rebirth</button>
+          </div>
+        </div>
+        <div class="event-list" id="eventList">
+          <div class="event-item"><span class="event-time">—</span><span class="event-type">WAITING</span><span class="event-message">Connecting to survival loop...</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Death Overlay -->
+  <div class="death-overlay" id="deathOverlay">
+    <div class="death-content">
+      <div class="death-icon">☠️</div>
+      <div class="death-title">LIFE ENDED</div>
+      <div class="death-subtitle">Debt exceeded the death line. A soul crystal has been forged.</div>
+      <div class="death-stats">
+        <div class="death-stat"><span class="label">Life</span><span class="value mono" id="deathLife">#</span></div>
+        <div class="death-stat"><span class="label">Final Debt</span><span class="value mono" id="deathDebt">$</span></div>
+        <div class="death-stat"><span class="label">Total Earned</span><span class="value mono" id="deathEarned">$</span></div>
+      </div>
+      <button class="reborn-btn" id="rebornBtn">Begin Next Life →</button>
+    </div>
+  </div>
+
+  <!-- Rebirth Flash -->
+  <div class="rebirth-flash" id="rebirthFlash"></div>
+
+  <script>
+    // ---- State ----
+    const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws';
+    let ws = null;
+    let reconnectTimer = null;
+    let debtHistory = []; // [{time, debt, free, locked}]
+    let eventFilter = 'all';
+    let chart = null;
+    let wasDead = false;
+    let currentLife = null;
+
+    // ---- DOM Elements ----
+    const els = {
+      connStatus: document.getElementById('connStatus'),
+      connText: document.getElementById('connText'),
+      lifeNumber: document.getElementById('lifeNumber'),
+      stateBadge: document.getElementById('stateBadge'),
+      stateIcon: document.getElementById('stateIcon'),
+      stateText: document.getElementById('stateText'),
+      debtValue: document.getElementById('debtValue'),
+      debtPct: document.getElementById('debtPct'),
+      gaugeProgress: document.getElementById('gaugeProgress'),
+      walletLocked: document.getElementById('walletLocked'),
+      walletFree: document.getElementById('walletFree'),
+      walletDebt: document.getElementById('walletDebt'),
+      totalEarned: document.getElementById('totalEarned'),
+      eventList: document.getElementById('eventList'),
+      deathOverlay: document.getElementById('deathOverlay'),
+      deathLife: document.getElementById('deathLife'),
+      deathDebt: document.getElementById('deathDebt'),
+      deathEarned: document.getElementById('deathEarned'),
+      rebornBtn: document.getElementById('rebornBtn'),
+      rebirthFlash: document.getElementById('rebirthFlash'),
+    };
+
+    // ---- State Icons & Colors ----
+    const STATE_CONFIG = {
+      thriving:   { icon: '🟢', label: 'Thriving',    class: 'state-thriving'   },
+      surviving:  { icon: '🟡', label: 'Surviving',   class: 'state-surviving'  },
+      struggling: { icon: '🟠', label: 'Struggling',  class: 'state-struggling' },
+      critical:   { icon: '🔴', label: 'Critical',    class: 'state-critical'   },
+      terminal:   { icon: '💀', label: 'Terminal',    class: 'state-terminal'   },
+      dead:       { icon: '☠️', label: 'Dead',        class: 'state-dead'       },
+    };
+
+    // ---- Format helpers ----
+    function fmtMoney(v) { return '$' + Number(v).toFixed(2); }
+    function fmtTime(ts) { return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+    function nowIso() { return new Date().toISOString(); }
+
+    // ---- WebSocket ----
+    function connect() {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+      els.connStatus.className = 'connection-status connecting';
+      els.connText.textContent = 'Connecting...';
+
+      ws = new WebSocket(wsUrl);
+      ws.onopen = () => {
+        els.connStatus.className = 'connection-status connected';
+        els.connText.textContent = 'Live';
+        // Request initial state
+        ws.send(JSON.stringify({ type: 'get_status' }));
+      };
+      ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
+      ws.onclose = () => {
+        els.connStatus.className = 'connection-status';
+        els.connText.textContent = 'Disconnected';
+        scheduleReconnect();
+      };
+      ws.onerror = () => { /* onclose handles reconnect */ };
+    }
+
+    function scheduleReconnect() {
+      if (reconnectTimer) return;
+      reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 2000);
+    }
+
+    // ---- Message Handler ----
+    function handleMessage(msg) {
+      // Handle both direct status broadcasts and explicit events
+      const eventType = msg.event || 'status_update';
+      const alive = msg.alive !== undefined ? msg.alive : true;
+
+      // Update all UI from status payload
+      updateDashboard(msg);
+
+      // Handle specific events
+      if (eventType === 'death' || (!alive && !wasDead && currentLife !== null)) {
+        showDeath(msg);
+      } else if (eventType === 'reincarnation' || (alive && wasDead)) {
+        showRebirth(msg);
+      }
+
+      wasDead = !alive;
+      currentLife = msg.life_number;
+      addEvent(eventType, msg);
+    }
+
+    function updateDashboard(s) {
+      // Life number
+      if (s.life_number !== undefined) {
+        els.lifeNumber.textContent = '#' + s.life_number;
+      }
+
+      // Survival state
+      if (s.state !== undefined) {
+        const cfg = STATE_CONFIG[s.state] || STATE_CONFIG.thriving;
+        els.stateBadge.className = 'state-badge ' + cfg.class;
+        els.stateIcon.textContent = cfg.icon;
+        els.stateText.textContent = cfg.label;
+      }
+
+      // Debt gauge
+      if (s.debt !== undefined) {
+        const debt = Number(s.debt);
+        const pct = Math.min(100, Math.max(0, (debt / 10) * 100));
+        const circumference = 2 * Math.PI * 80;
+        const offset = circumference - (pct / 100) * circumference;
+
+        els.debtValue.textContent = fmtMoney(debt);
+        els.debtPct.textContent = pct.toFixed(1) + '% to death';
+        els.gaugeProgress.style.strokeDashoffset = offset;
+
+        // Color based on danger level
+        if (debt >= 9.5) els.gaugeProgress.style.stroke = 'var(--danger)';
+        else if (debt >= 7.5) els.gaugeProgress.style.stroke = '#ff8800';
+        else if (debt >= 5) els.gaugeProgress.style.stroke = 'var(--warning)';
+        else if (debt >= 2) els.gaugeProgress.style.stroke = 'var(--accent)';
+        else els.gaugeProgress.style.stroke = 'var(--accent)';
+      }
+
+      // Wallet
+      if (s.wallet_locked !== undefined) els.walletLocked.textContent = fmtMoney(s.wallet_locked);
+      if (s.wallet_free !== undefined) els.walletFree.textContent = fmtMoney(s.wallet_free);
+      if (s.wallet_debt !== undefined) els.walletDebt.textContent = fmtMoney(s.wallet_debt);
+
+      // Total earned
+      if (s.total_earned !== undefined) els.totalEarned.textContent = fmtMoney(s.total_earned);
+
+      // Chart data point
+      if (s.debt !== undefined) {
+        const point = {
+          time: nowIso(),
+          debt: Number(s.debt),
+          free: Number(s.wallet_free || 0),
+          locked: Number(s.wallet_locked || 0),
+        };
+        debtHistory.push(point);
+        // Keep last 100 points
+        if (debtHistory.length > 100) debtHistory.shift();
+        updateChart();
+      }
+    }
+
+    // ---- Chart ----
+    function initChart() {
+      const ctx = document.getElementById('debtChart').getContext('2d');
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: { datasets: [] },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { type: 'time', time: { unit: 'minute', displayFormats: { minute: 'HH:mm' } }, grid: { color: 'var(--border)' }, ticks: { color: 'var(--fg-muted)', font: { family: 'var(--mono)', size: 10 } } },
+            y: { beginAtZero: true, suggestedMax: 10, grid: { color: 'var(--border)' }, ticks: { color: 'var(--fg-muted)', font: { family: 'var(--mono)', size: 10 }, callback: v => '$' + v } },
+          },
+          elements: { point: { radius: 0, hoverRadius: 4 }, line: { tension: 0.3 } },
+        },
+      });
+    }
+
+    function updateChart() {
+      if (!chart) return;
+
+      const deathLine = debtHistory.map(p => ({ x: p.time, y: 10 }));
+
+      chart.data.datasets = [
+        { label: 'Debt', data: debtHistory.map(p => ({ x: p.time, y: p.debt })), borderColor: 'var(--danger)', backgroundColor: 'var(--danger-dim)', borderWidth: 2, fill: true },
+        { label: 'Free', data: debtHistory.map(p => ({ x: p.time, y: p.free })), borderColor: 'var(--accent)', backgroundColor: 'var(--accent-dim)', borderWidth: 2, fill: false },
+        { label: 'Locked', data: debtHistory.map(p => ({ x: p.time, y: p.locked })), borderColor: 'var(--warning)', backgroundColor: 'var(--warning-dim)', borderWidth: 2, fill: false },
+        { label: 'Death Line', data: deathLine, borderColor: 'var(--border)', borderWidth: 1, borderDash: [6, 6], fill: false, pointRadius: 0 },
+      ];
+      chart.update('none');
+    }
+
+    // ---- Event Feed ----
+    function addEvent(type, data) {
+      const time = nowIso();
+      let message = '';
+
+      switch (type) {
+        case 'debt_tick':
+          message = `Debt tick: ${fmtMoney(data.debt)}`;
+          break;
+        case 'state_transition':
+          message = `State: ${data.previous_state || '?'} → ${data.state}`;
+          break;
+        case 'research_cycle':
+          message = `Research cycle completed`;
+          break;
+        case 'death':
+          message = `DEATH: debt ${fmtMoney(data.debt)}, life ${data.life_number}`;
+          break;
+        case 'reincarnation':
+          message = `REINCARNATION: Life ${data.life_number} born`;
+          break;
+        default:
+          message = JSON.stringify(data).slice(0, 120);
+      }
+
+      const item = document.createElement('div');
+      item.className = 'event-item' + (type === 'death' ? ' death' : '') + (type === 'reincarnation' ? ' reincarnation' : '');
+      item.dataset.type = type;
+      item.innerHTML = `
+        <span class="event-time">${fmtTime(time)}</span>
+        <span class="event-type">${type}</span>
+        <span class="event-message">${escapeHtml(message)}</span>
+      `;
+      els.eventList.prepend(item);
+
+      // Limit to 200 items
+      while (els.eventList.children.length > 200) els.eventList.lastChild.remove();
+      applyFilter();
+    }
+
+    function applyFilter() {
+      const items = els.eventList.querySelectorAll('.event-item');
+      items.forEach(el => {
+        if (eventFilter === 'all' || el.dataset.type === eventFilter) {
+          el.style.display = 'flex';
+        } else {
+          el.style.display = 'none';
+        }
+      });
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"');
+    }
+
+    // ---- Death Overlay ----
+    function showDeath(data) {
+      els.deathLife.textContent = '#' + (data.life_number || '?');
+      els.deathDebt.textContent = fmtMoney(data.debt || 0);
+      els.deathEarned.textContent = fmtMoney(data.total_earned || 0);
+      els.deathOverlay.classList.add('active');
+    }
+
+    function showRebirth(data) {
+      els.deathOverlay.classList.remove('active');
+      // Flash effect
+      els.rebirthFlash.classList.add('active');
+      setTimeout(() => els.rebirthFlash.classList.remove('active'), 800);
+    }
+
+    els.rebornBtn.addEventListener('click', () => {
+      els.deathOverlay.classList.remove('active');
+      // The server handles reincarnation automatically; this is just dismissing the overlay
+    });
+
+    // ---- Filter Buttons ----
+    document.querySelectorAll('.feed-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.feed-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        eventFilter = btn.dataset.filter;
+        applyFilter();
+      });
+    });
+
+    // ---- Chart.js (inline minimal) ----
+    // Minimal Chart.js substitute to avoid CDN
+    class Chart {
+      constructor(ctx, config) {
+        this.ctx = ctx;
+        this.config = config;
+        this.data = config.data;
+        this.options = config.options;
+        this.width = ctx.canvas.width = ctx.canvas.offsetWidth * devicePixelRatio;
+        this.height = ctx.canvas.height = ctx.canvas.offsetHeight * devicePixelRatio;
+        ctx.canvas.style.width = ctx.canvas.offsetWidth + 'px';
+        ctx.canvas.style.height = ctx.canvas.offsetHeight + 'px';
+        this.scales = this.initScales();
+        this.render();
+        new ResizeObserver(() => this.resize()).observe(ctx.canvas);
+      }
+
+      initScales() {
+        const o = this.options.scales;
+        return {
+          x: { ...o.x, min: Infinity, max: -Infinity },
+          y: { ...o.y, min: 0, max: o.y.suggestedMax || 10 },
+        };
+      }
+
+      resize() {
+        const ctx = this.ctx;
+        const dpr = devicePixelRatio;
+        this.width = ctx.canvas.width = ctx.canvas.offsetWidth * dpr;
+        this.height = ctx.canvas.height = ctx.canvas.offsetHeight * dpr;
+        ctx.canvas.style.width = ctx.canvas.offsetWidth + 'px';
+        ctx.canvas.style.height = ctx.canvas.offsetHeight + 'px';
+        this.render();
+      }
+
+      update() { this.render(); }
+
+      render() {
+        const ctx = this.ctx;
+        const dpr = devicePixelRatio;
+        const w = this.width, h = this.height;
+        const pad = { top: 20 * dpr, right: 40 * dpr, bottom: 40 * dpr, left: 50 * dpr };
+        const plotW = w - pad.left - pad.right;
+        const plotH = h - pad.top - pad.bottom;
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.scale(dpr, dpr);
+        const cssW = w / dpr, cssH = h / dpr;
+        const cssPad = { top: 20, right: 40, bottom: 40, left: 50 };
+        const cssPlotW = cssW - cssPad.left - cssPad.right;
+        const cssPlotH = cssH - cssPad.top - cssPad.bottom;
+
+        // Draw grid
+        ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--border').trim();
+        ctx.lineWidth = 1;
+        ctx.font = '10px var(--mono)';
+        ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--fg-muted').trim();
+
+        // Y grid lines
+        const ySteps = 5;
+        for (let i = 0; i <= ySteps; i++) {
+          const y = cssPad.top + (i / ySteps) * cssPlotH;
+          ctx.beginPath(); ctx.moveTo(cssPad.left, y); ctx.lineTo(cssPad.left + cssPlotW, y); ctx.stroke();
+          const val = this.scales.y.max - (i / ySteps) * this.scales.y.max;
+          ctx.fillText('$' + val.toFixed(1), cssPad.left - 45, y + 3);
+        }
+
+        // X grid lines (time)
+        const datasets = this.data.datasets || [];
+        const allPoints = datasets.flatMap(d => d.data || []);
+        if (allPoints.length > 1) {
+          const times = allPoints.map(p => new Date(p.x).getTime());
+          const minT = Math.min(...times), maxT = Math.max(...times);
+          const xSteps = 6;
+          for (let i = 0; i <= xSteps; i++) {
+            const x = cssPad.left + (i / xSteps) * cssPlotW;
+            ctx.beginPath(); ctx.moveTo(x, cssPad.top); ctx.lineTo(x, cssPad.top + cssPlotH); ctx.stroke();
+            const t = new Date(minT + (i / xSteps) * (maxT - minT));
+            ctx.fillText(t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), x - 25, cssH - cssPad.bottom + 20);
+          }
+        }
+
+        // Draw datasets
+        datasets.forEach(ds => {
+          const pts = (ds.data || []).map(p => ({
+            x: cssPad.left + ((new Date(p.x).getTime() - (allPoints.length ? Math.min(...allPoints.map(q => new Date(q.x).getTime())) : 0)) / (maxT - minT || 1)) * cssPlotW,
+            y: cssPad.top + cssPlotH - (p.y / this.scales.y.max) * cssPlotH,
+          }));
+          if (pts.length < 2) return;
+
+          ctx.strokeStyle = ds.borderColor.replace('var(--', '').replace(')', '').trim() || '#888';
+          if (ds.borderColor.includes('danger')) ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--danger').trim();
+          else if (ds.borderColor.includes('accent')) ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+          else if (ds.borderColor.includes('warning')) ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--warning').trim();
+          else if (ds.borderColor.includes('border')) ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--border').trim();
+
+          ctx.lineWidth = ds.borderWidth || 2;
+          if (ds.borderDash) ctx.setLineDash(ds.borderDash); else ctx.setLineDash([]);
+
+          // Fill
+          if (ds.fill) {
+            const grad = ctx.createLinearGradient(0, cssPad.top, 0, cssPad.top + cssPlotH);
+            const fillColor = ds.backgroundColor.replace('var(--', '').replace(')', '').trim() || '#88833';
+            if (fillColor.includes('danger')) grad.addColorStop(0, getComputedStyle(document.documentElement).getPropertyValue('--danger-dim').trim());
+            else if (fillColor.includes('accent')) grad.addColorStop(0, getComputedStyle(document.documentElement).getPropertyValue('--accent-dim').trim());
+            else if (fillColor.includes('warning')) grad.addColorStop(0, getComputedStyle(document.documentElement).getPropertyValue('--warning-dim').trim());
+            else grad.addColorStop(0, 'rgba(136,136,136,0.1)');
+            grad.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.moveTo(pts[0].x, cssPad.top + cssPlotH);
+            pts.forEach(p => ctx.lineTo(p.x, p.y));
+            ctx.lineTo(pts[pts.length - 1].x, cssPad.top + cssPlotH);
+            ctx.closePath();
+            ctx.fill();
+          }
+
+          // Line
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          if (ds.tension && ds.tension > 0) {
+            for (let i = 1; i < pts.length - 2; i++) {
+              const xc = (pts[i].x + pts[i + 1].x) / 2;
+              const yc = (pts[i].y + pts[i + 1].y) / 2;
+              ctx.quadraticCurveTo(pts[i].x, pts[i].y, xc, yc);
+            }
+            ctx.quadraticCurveTo(pts[pts.length - 2].x, pts[pts.length - 2].y, pts[pts.length - 1].x, pts[pts.length - 1].y);
+          } else {
+            pts.forEach(p => ctx.lineTo(p.x, p.y));
+          }
+          ctx.stroke();
+        });
+
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+      }
+    }
+
+    // ---- Init ----
+    function init() {
+      initChart();
+      connect();
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  </script>
+</body>
+</html>
