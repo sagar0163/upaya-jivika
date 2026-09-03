@@ -31,7 +31,9 @@ if TYPE_CHECKING:
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
+from src.audit_trail import AuditTrail
 from src.guardrails import get_guardrail
+from src.state_machine import resolve_state
 from src.task_scorer import (
     PaymentMethod,
     Platform,
@@ -772,6 +774,7 @@ class TaskExecutor:
         vault: Optional[CredentialsVault] = None,
         guardrail: EthicalGuardrail | None = None,
         task_timeout_seconds: float = DEFAULT_TASK_TIMEOUT_SECONDS,
+        audit_trail: Optional[AuditTrail] = None,
     ) -> None:
         self.wallet = wallet
         self.headless = headless
@@ -779,6 +782,7 @@ class TaskExecutor:
         # Hard blacklist double-check runs immediately before execution.
         self.guardrail = guardrail or get_guardrail()
         self.task_timeout_seconds = task_timeout_seconds
+        self.audit_trail = audit_trail
         self.session_manager = BrowserSessionManager(
             headless=headless, storage_dir=session_dir
         )
@@ -951,6 +955,20 @@ class TaskExecutor:
             except Exception as e:
                 logger.error(f"Wallet credit failed: {e}")
                 result.platform_data["wallet_error"] = str(e)
+
+        if self.audit_trail is not None:
+            state = resolve_state(self.wallet.debt)
+            self.audit_trail.record_task_execution(
+                task_id=result.task_id,
+                task_title=candidate.title,
+                platform=candidate.platform.value,
+                success=result.success,
+                amount_earned=result.amount_earned,
+                time_spent_hours=result.time_spent_hours,
+                error=result.error,
+                survival_state=state.value,
+                debt=self.wallet.debt,
+            )
 
         return result
 
