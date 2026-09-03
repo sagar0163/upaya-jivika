@@ -20,6 +20,8 @@ from abc import ABC, abstractmethod
 import httpx
 from pydantic import BaseModel, Field
 
+from src.rate_limiter import RateLimitTracker, get_rate_limiter
+
 logger = logging.getLogger(__name__)
 
 
@@ -795,8 +797,9 @@ def get_routing_order(task_type: TaskType) -> List[Provider]:
 class BrainRouter:
     """Main brain router with automatic failover across providers."""
 
-    def __init__(self):
+    def __init__(self, rate_limiter: Optional[RateLimitTracker] = None):
         self.clients: Dict[Provider, ProviderClient] = {}
+        self._rate_limiter = rate_limiter or get_rate_limiter()
         self._initialized = False
 
     def _initialize_clients(self):
@@ -824,11 +827,17 @@ class BrainRouter:
             if provider not in self.clients:
                 continue
 
+            # Pre-check: skip providers approaching their rate limit
+            if not self._rate_limiter.is_available(provider.value):
+                logger.debug(f"Skipping {provider.value}: rate limit approaching")
+                continue
+
             client = self.clients[provider]
             logger.info(f"Trying provider: {provider.value}")
 
             response = await client.complete(request)
             if response.success:
+                self._rate_limiter.record_usage(provider.value)
                 logger.info(f"Success with {provider.value} in {response.latency_ms}ms")
                 return response
             else:
