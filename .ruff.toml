@@ -1,0 +1,9 @@
+line-length = 120
+target-version = "py312"
+
+[lint]
+# Curated set per artifact.md §16: pyflakes (F), pycodestyle basics,
+# import sorting (I). F811 (redefined-while-unused) is intentionally
+# ignored — it fires heavily on test fixtures and is not a real defect.
+select = ["E", "F", "I"]
+ignore = ["F811"]

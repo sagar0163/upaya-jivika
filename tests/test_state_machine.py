@@ -1,14 +1,15 @@
 """Unit tests for state_machine.py — survival state transitions."""
 
-import pytest
 from decimal import Decimal
 
+import pytest
+
 from src.state_machine import (
-    SurvivalStateMachine,
     State,
+    SurvivalStateMachine,
+    min_certainty,
     resolve_state,
     risk_tolerance,
-    min_certainty,
 )
 
 

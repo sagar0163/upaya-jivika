@@ -6,26 +6,23 @@ Research gate: Tasks score >0.85 certainty to enter queue (relaxed in Critical/T
 
 from __future__ import annotations
 
-import os
 import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
-from urllib.parse import quote_plus
+from typing import Any, Dict, List, Optional
 
 import httpx
-from pydantic import BaseModel, Field
 from duckduckgo_search import DDGS
+from pydantic import BaseModel
 
 from src.brain_router import (
-    get_brain_router,
     CompletionRequest,
     TaskType,
-    Provider,
+    get_brain_router,
 )
 
 logger = logging.getLogger(__name__)

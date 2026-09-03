@@ -1,7 +1,7 @@
 <!-- AUTO-GENERATED from artifact.md by scripts/generate-readme.sh. Do not edit directly. -->
 
 # Survival AI — Project Spec
-> Version 0.6 · Last updated 2026-09-03  
+> Version 0.7 · Last updated 2026-09-04  
 > Single source of truth. Update this file, not chat.
 
 ---
@@ -427,6 +427,7 @@ dashboard.py         — Rich terminal UI, live status
 | Priority | Gap | Status |
 |---|---|---|
 | ✅ | Payment confirmation | **SOLVED** — Payoneer webhook → Supabase update |
+| ✅ | CI pipeline | **SOLVED** — `ci.yml` now runs `ruff` + `pytest` (was a Node no-op); flaky WS test fixed |
 | 🔴 | Email inbox | Needed for platform verifications + payment alerts |
 | 🔴 | CAPTCHA handling | Fiverr/Upwork bot detection — no bypass strategy |
 | 🔴 | Withdrawal mechanism | UI for user to move pools to real bank account |
@@ -479,7 +480,7 @@ Render free tier sleeps after 15 min inactivity. GitHub Actions crons never slee
 
 | File | Schedule | Job |
 |---|---|---|
-| `ci.yml` | Every push / PR | `ruff` lint + `pytest` — nothing broken merges |
+| `ci.yml` | Every push / PR | `ruff` lint + `pytest` — nothing broken merges. Runs `pip install -r requirements.txt`, `ruff check src tests`, `pytest` on Python 3.12. |
 | `debt_clock.yml` | `0 9 * * *` daily | POST `/api/debt/tick` → Supabase debt += $0.50 → death check |
 | `research.yml` | `0 */6 * * *` | POST `/api/research/trigger` → DDG + Jina + NVIDIA → task queue |
 | `diary_daily.yml` | `0 23 * * *` | Read Supabase events → NVIDIA writes narrative → push `day-XX.md` to GitHub diary |

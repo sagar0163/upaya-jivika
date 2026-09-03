@@ -1,12 +1,13 @@
 """Integration test: wallet + debt engine + state machine working together."""
 
-import pytest
 from decimal import Decimal
 
-from src.wallet import Wallet, SpendRequest
+import pytest
+
 from src.debt_engine import DebtEngine, DifficultyMode
-from src.state_machine import SurvivalStateMachine, State
 from src.soul_crystal import ReincarnationEngine
+from src.state_machine import State, SurvivalStateMachine
+from src.wallet import SpendRequest, Wallet
 
 
 class TestEndToEndLifecycle:

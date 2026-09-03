@@ -12,23 +12,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          node-version: 20
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
-          if [ -f package-lock.json ]; then npm ci
-          elif [ -f package.json ]; then npm install
-          else echo "No package.json yet — skipping install"; fi
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff
 
-      - name: Lint
-        run: |
-          if [ -f package.json ] && npm run | grep -q " lint"; then npm run lint
-          else echo "No lint script yet — skipping"; fi
+      - name: Lint (ruff)
+        run: ruff check src tests
 
-      - name: Test
-        run: |
-          if [ -f package.json ] && npm run | grep -q " test"; then npm test
-          else echo "No test script yet — skipping"; fi
+      - name: Test (pytest)
+        run: pytest

@@ -1,15 +1,13 @@
 """Unit tests for debt_engine.py — existence debt accumulation and death trigger."""
 
-import pytest
 from decimal import Decimal
-from datetime import datetime, timedelta
+
+import pytest
 
 from src.debt_engine import (
-    DebtEngine,
-    DebtState,
-    DifficultyMode,
     DEATH_THRESHOLD,
-    DIFFICULTY_PARAMS,
+    DebtEngine,
+    DifficultyMode,
 )
 
 
