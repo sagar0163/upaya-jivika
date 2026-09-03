@@ -1381,15 +1381,18 @@ class TestTaskScorerExecutorIntegration:
         assert len(scored) == 1
         assert scored[0].candidate.title == "Good task"
 
-        # Execute passing task
-        result = await mock_execute_task(scored[0].candidate)
-
-        # Retry if mock fails (80% success rate, but test must be deterministic)
-        if not result.success:
+        # Execute passing task. mock_execute_task succeeds ~80% of the time, so
+        # retry a bounded number of times to guarantee a successful run. This
+        # keeps the test deterministic (it must verify the credit path) instead
+        # of occasionally failing on the 20% mock-failure branch.
+        result = None
+        for _ in range(10):
             result = await mock_execute_task(scored[0].candidate)
-        
-        if result.success:
-            wallet.credit_earned(result.amount_earned)
+            if result.success:
+                break
+
+        assert result is not None and result.success
+        wallet.credit_earned(result.amount_earned)
 
         assert wallet.free > 0 or wallet.locked > 0
 
