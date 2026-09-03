@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Runtime Playwright session persistence (browser cookies)
+.uj_sessions/
+
 # Distribution / packaging
 .Python
 build/
