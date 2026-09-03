@@ -430,7 +430,7 @@ dashboard.py         — Rich terminal UI, live status
 | 🔴 | Email inbox | Needed for platform verifications + payment alerts |
 | 🔴 | CAPTCHA handling | Fiverr/Upwork bot detection — no bypass strategy |
 | 🔴 | Withdrawal mechanism | UI for user to move pools to real bank account |
-| 🟡 | Ethical guardrail | Hardcoded blacklist enforced even in Terminal state |
+| 🟡 | Ethical guardrail | **SOLVED** — `src/guardrails.py` hard blacklist (spam/fake review/plagiarism/ToS violation/illegal) enforced in `task_scorer` + `task_executor` even in Terminal state |
 | 🟡 | Respawn policy | Fresh slate vs carry forward task scores? |
 | 🟡 | Human approval gate | User confirm before AI spends from free pool? |
 | 🟡 | Audit trail | Every decision logged with full reasoning |
