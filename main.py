@@ -16,7 +16,7 @@ from decimal import Decimal
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
 from src.persistence import PersistenceStore, create_persistence_store
@@ -26,6 +26,34 @@ from src.state_machine import SurvivalStateMachine
 from src.wallet import Wallet
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# WebSocket Manager
+# ---------------------------------------------------------------------------
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: set[WebSocket] = set()
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.add(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.discard(websocket)
+
+    async def broadcast(self, message: dict[str, Any]):
+        disconnected = set()
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_json(message)
+            except Exception:
+                disconnected.add(connection)
+        for d in disconnected:
+            self.active_connections.discard(d)
+
+ws_manager = ConnectionManager()
 
 
 # ---------------------------------------------------------------------------
@@ -41,8 +69,13 @@ class SurvivalLoop:
     - Death → soul crystal → reincarnation → hot-memory wipe
     """
 
-    def __init__(self, persistence: PersistenceStore | None = None) -> None:
+    def __init__(self, persistence: PersistenceStore | None = None, ws_mgr: ConnectionManager | None = ws_manager) -> None:
         self.persistence = persistence or create_persistence_store()
+        self.ws_manager = ws_mgr
+        try:
+            self._event_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._event_loop = None
 
         # Core modules
         self.debt_engine = DebtEngine(mode=DifficultyMode.NORMAL)
@@ -64,6 +97,19 @@ class SurvivalLoop:
 
         # Restore persisted state
         self._restore_state()
+
+    def _broadcast_event(self, event_name: str) -> None:
+        if self.ws_manager:
+            status = self.get_status()
+            status["event"] = event_name
+            if self._event_loop and self._event_loop.is_running():
+                asyncio.run_coroutine_threadsafe(self.ws_manager.broadcast(status), self._event_loop)
+            else:
+                try:
+                    # Fallback for synchronous test environments without a running event loop
+                    asyncio.run(self.ws_manager.broadcast(status))
+                except RuntimeError:
+                    pass
 
     # -- persistence --------------------------------------------------------
 
@@ -122,6 +168,7 @@ class SurvivalLoop:
         self.wallet.debt = debt
         self._event_log.append(f"Debt tick: ${debt}")
         self._persist_all()
+        self._broadcast_event("debt_tick")
 
         if transition:
             self._event_log.append(
@@ -133,6 +180,7 @@ class SurvivalLoop:
                 transition.current.value,
                 debt,
             )
+            self._broadcast_event("state_transition")
 
     def _on_death(self, state: DebtState) -> None:
         """Fired when debt hits $10 — soul crystal + reincarnation."""
@@ -153,6 +201,7 @@ class SurvivalLoop:
         self._persist_all()
 
         logger.info("Soul crystal generated for life %d", state.life_number)
+        self._broadcast_event("death")
 
         # --- Reincarnation ---
         self._reincarnate(state)
@@ -182,6 +231,7 @@ class SurvivalLoop:
         # Persist fresh hot state
         self._persist_all()
         logger.info("New life %d started", new_life_num)
+        self._broadcast_event("reincarnation")
 
     # -- scheduler jobs -----------------------------------------------------
 
@@ -200,6 +250,10 @@ class SurvivalLoop:
                 )
             self._persist_all()
             logger.info("Research cycle complete: %d topics", len(results))
+            if self.ws_manager:
+                status = self.get_status()
+                status["event"] = "research_cycle"
+                await self.ws_manager.broadcast(status)
         except Exception:
             logger.exception("Research cycle failed")
 
@@ -327,3 +381,12 @@ def status():
     if loop is None:
         raise HTTPException(status_code=503, detail="initialising")
     return loop.get_status()
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
