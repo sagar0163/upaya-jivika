@@ -19,6 +19,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException
 
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
+from src.diary import DiaryWriter
 from src.persistence import PersistenceStore, create_persistence_store
 from src.research_loop import ResearchAgent
 from src.soul_crystal import LifeRecord, ReincarnationEngine
@@ -50,6 +51,7 @@ class SurvivalLoop:
         self.state_machine = SurvivalStateMachine()
         self.reincarnation = ReincarnationEngine()
         self.research = ResearchAgent()
+        self.diary = DiaryWriter()
 
         # Wire persistence on every debt tick
         self.debt_engine._on_tick = self._on_tick  # type: ignore[assignment]
@@ -134,6 +136,17 @@ class SurvivalLoop:
                 debt,
             )
 
+        # Write daily diary entry
+        try:
+            self.diary.on_tick(
+                life_number=self.debt_engine.state.life_number,
+                debt=debt,
+                state=self.state_machine.state.value,
+                events=list(self._event_log),
+            )
+        except Exception:
+            logger.exception("Diary write failed on tick")
+
     def _on_death(self, state: DebtState) -> None:
         """Fired when debt hits $10 — soul crystal + reincarnation."""
         logger.info(
@@ -153,6 +166,23 @@ class SurvivalLoop:
         self._persist_all()
 
         logger.info("Soul crystal generated for life %d", state.life_number)
+
+        # Write death note + soul crystal to GitHub diary
+        try:
+            self.diary.on_death(
+                life_number=state.life_number,
+                final_debt=state.debt,
+                total_earned=self._life_record.total_earned if self._life_record else Decimal("0"),
+                peak_state=self._life_record.peak_state if self._life_record else "thriving",
+                best_platform=self._life_record.best_platform if self._life_record else "",
+                events=list(self._event_log),
+                failed_strategies=self._life_record.failed_strategies if self._life_record else [],
+                key_lessons=self._life_record.events if self._life_record else [],
+                avoid=self._life_record.avoid if self._life_record else [],
+                soul_crystal=crystal,
+            )
+        except Exception:
+            logger.exception("Diary write failed on death")
 
         # --- Reincarnation ---
         self._reincarnate(state)
@@ -182,6 +212,18 @@ class SurvivalLoop:
         # Persist fresh hot state
         self._persist_all()
         logger.info("New life %d started", new_life_num)
+
+        # Write born tag to GitHub diary
+        try:
+            self.diary.reset_day_counter()
+            self.diary.on_tick(
+                life_number=new_life_num,
+                debt=Decimal("0.00"),
+                state=self.state_machine.state.value,
+                events=list(self._event_log),
+            )
+        except Exception:
+            logger.exception("Diary write failed on rebirth")
 
     # -- scheduler jobs -----------------------------------------------------
 
