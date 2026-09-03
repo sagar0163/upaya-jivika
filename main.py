@@ -16,7 +16,7 @@ from decimal import Decimal
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
 from src.persistence import PersistenceStore, create_persistence_store
@@ -319,3 +319,11 @@ def health():
         "debt": str(loop.debt_engine.debt),
         "survival_state": loop.state_machine.state.value,
     }
+
+@app.get("/status")
+def status():
+    """Return the current survival state."""
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="initialising")
+    return loop.get_status()

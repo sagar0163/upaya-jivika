@@ -318,3 +318,48 @@ class TestPersistenceFallback:
         loop2 = SurvivalLoop(persistence=store)
         assert loop2.debt_engine.debt == Decimal("1.50")
         assert loop2.wallet.debt == Decimal("1.50")
+
+# ---------------------------------------------------------------------------
+# Status endpoint
+# ---------------------------------------------------------------------------
+
+class TestStatusEndpoint:
+    """The /status endpoint must return the full state."""
+
+    def test_status_returns_200_and_keys(self):
+        from fastapi.testclient import TestClient
+        import main as main_mod
+
+        @main_mod.asynccontextmanager
+        async def _noop_lifespan(app):
+            yield
+
+        test_app = main_mod.FastAPI(title="test", lifespan=_noop_lifespan)
+        test_app.router.routes.extend(main_mod.app.router.routes)
+
+        store = InMemoryStore()
+        loop = main_mod.SurvivalLoop(persistence=store)
+        main_mod._loop = loop
+
+        client = TestClient(test_app)
+        resp = client.get("/status")
+        
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "alive" in body
+        assert "life_number" in body
+        assert "debt" in body
+        assert "state" in body
+        assert "wallet_locked" in body
+        assert "wallet_free" in body
+        assert "wallet_debt" in body
+        assert "total_earned" in body
+        assert "event_count" in body
+        assert "soul_crystals" in body
+
+        # Test initialising behavior
+        main_mod._loop = None
+        resp_503 = client.get("/status")
+        assert resp_503.status_code == 503
+        assert resp_503.json()["detail"] == "initialising"
+
