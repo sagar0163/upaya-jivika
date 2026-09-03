@@ -398,6 +398,10 @@ class TestWebSocketBroadcast:
         client = TestClient(test_app)
         
         with client.websocket_connect("/ws") as websocket:
+            # Consume the initial status snapshot sent on connection.
+            snapshot = websocket.receive_json()
+            assert snapshot["event"] == "status_snapshot"
+
             # Trigger a debt tick
             loop.debt_tick()
             
@@ -406,5 +410,104 @@ class TestWebSocketBroadcast:
             data = websocket.receive_json()
             assert data["event"] == "debt_tick"
             assert data["debt"] == "0.50"
+
+        main_mod._loop = None
+
+
+# ---------------------------------------------------------------------------
+# API endpoints for GitHub Actions cron jobs
+# ---------------------------------------------------------------------------
+
+class TestDebtTickEndpoint:
+    """Test the /api/debt/tick endpoint."""
+
+    def test_debt_tick_endpoint_works(self):
+        from fastapi.testclient import TestClient
+        import main as main_mod
+
+        @main_mod.asynccontextmanager
+        async def _noop_lifespan(app):
+            yield
+
+        test_app = main_mod.FastAPI(title="test", lifespan=_noop_lifespan)
+        test_app.router.routes.extend(main_mod.app.router.routes)
+
+        store = InMemoryStore()
+        loop = main_mod.SurvivalLoop(persistence=store)
+        main_mod._loop = loop
+
+        client = TestClient(test_app)
+        resp = client.post("/api/debt/tick")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["skipped"] is False
+        assert body["debt"] == "0.50"
+        assert body["alive"] is True
+        assert body["life_number"] == 1
+
+        main_mod._loop = None
+
+    def test_debt_tick_deduplication(self):
+        """Test that ticks within 23 hours are deduplicated."""
+        from fastapi.testclient import TestClient
+        import main as main_mod
+
+        @main_mod.asynccontextmanager
+        async def _noop_lifespan(app):
+            yield
+
+        test_app = main_mod.FastAPI(title="test", lifespan=_noop_lifespan)
+        test_app.router.routes.extend(main_mod.app.router.routes)
+
+        store = InMemoryStore()
+        loop = main_mod.SurvivalLoop(persistence=store)
+        main_mod._loop = loop
+
+        client = TestClient(test_app)
+
+        # First tick
+        resp1 = client.post("/api/debt/tick")
+        assert resp1.status_code == 200
+        assert resp1.json()["skipped"] is False
+
+        # Second tick immediately - should be deduplicated
+        resp2 = client.post("/api/debt/tick")
+        assert resp2.status_code == 200
+        body2 = resp2.json()
+        assert body2["skipped"] is True
+        assert "tick already performed recently" in body2["reason"]
+        assert body2["debt"] == "0.50"
+
+        main_mod._loop = None
+
+
+class TestResearchTriggerEndpoint:
+    """Test the /api/research/trigger endpoint."""
+
+    def test_research_trigger_endpoint_works(self):
+        from fastapi.testclient import TestClient
+        import main as main_mod
+        from unittest.mock import AsyncMock
+
+        @main_mod.asynccontextmanager
+        async def _noop_lifespan(app):
+            yield
+
+        test_app = main_mod.FastAPI(title="test", lifespan=_noop_lifespan)
+        test_app.router.routes.extend(main_mod.app.router.routes)
+
+        store = InMemoryStore()
+        loop = main_mod.SurvivalLoop(persistence=store)
+        loop.research.research_earning_platforms = AsyncMock(return_value=[])
+        main_mod._loop = loop
+
+        client = TestClient(test_app)
+        resp = client.post("/api/research/trigger")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "completed"
+        assert "topics_researched" in body
 
         main_mod._loop = None
