@@ -181,6 +181,20 @@ class TestInMemoryStore:
         loaded = store.load_events()
         assert loaded == ["tick 1", "tick 2", "death"]
 
+    def test_events_save_replaces_not_appends(self, store):
+        # _persist_all() re-saves the full growing log on every tick; a
+        # second save of a superset must not duplicate the earlier rows.
+        store.save_events(["tick 1"])
+        store.save_events(["tick 1", "tick 2"])
+        store.save_events(["tick 1", "tick 2", "tick 3"])
+        assert store.load_events() == ["tick 1", "tick 2", "tick 3"]
+
+    def test_events_save_shrinks_list(self, store):
+        # Replacing with a shorter list must drop the stale rows.
+        store.save_events(["a", "b", "c"])
+        store.save_events(["a"])
+        assert store.load_events() == ["a"]
+
     def test_events_load_empty(self, store):
         assert store.load_events() == []
 

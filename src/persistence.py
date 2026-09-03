@@ -346,6 +346,9 @@ class SupabaseStore(PersistenceStore):
     # -- events -------------------------------------------------------------
 
     def save_events(self, events: list[str]) -> None:
+        # Replace, not append: _persist_all() calls save_events with the full
+        # event log on every tick, so appending would duplicate rows quadratically.
+        self._delete_all("events")
         for ev in events:
             self._append("events", {"text": ev})
 
