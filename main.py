@@ -286,8 +286,9 @@ class SurvivalLoop:
     def _reincarnate(self, state: DebtState) -> None:
         """Reset hot-memory state for a new life.
 
-        Soul crystals (permanent memory, §10 Layer 2/3) survive the wipe;
-        only hot-memory state (wallet, task queue, events, life record) is reset.
+        Soul crystals (permanent memory, §10 Layer 2/3) survive the wipe —
+        ``clear()`` preserves the archive by contract; only hot-memory state
+        (wallet, task queue, events, life record) is reset here.
         """
         logger.info("Reincarnating — resetting hot-memory state")
         self._event_log.append("REINCARNATION")
@@ -306,10 +307,9 @@ class SurvivalLoop:
         self.cold_archive.reset_for_new_life()
         self.cold_archive.begin_life(new_life_num)
 
-        # Wipe hot-memory state, preserving the permanent soul-crystal archive
+        # Wipe hot-memory state; the permanent soul-crystal archive is
+        # preserved by clear() (and lives on in the engine's memory).
         self.persistence.clear()
-        for crystal in self.reincarnation.soul_crystals:
-            self.persistence.save_soul_crystal(crystal)
 
         # Load ancestral memory — compress all past soul crystals
         # into a bounded block (never blocks a new life from starting)

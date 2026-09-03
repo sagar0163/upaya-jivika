@@ -160,7 +160,8 @@ class PersistenceStore(ABC):
     def load_events(self) -> list[str]: ...
 
     @abstractmethod
-    def clear(self) -> None: ...
+    def clear(self) -> None:
+        """Reset hot-memory state while preserving the soul-crystal archive."""
 
 
 # ---------------------------------------------------------------------------
@@ -212,10 +213,12 @@ class InMemoryStore(PersistenceStore):
         return list(self._events)
 
     def clear(self) -> None:
+        # Preserve the permanent soul-crystal archive (§10 Layer 2/3): it must
+        # survive reincarnation. Only wipe the hot-memory state (wallet, task
+        # queue, events, life record) that belongs to the dying life.
         self._debt_state = None
         self._wallet = None
         self._life_record = None
-        self._soul_crystals.clear()
         self._events.clear()
 
 
@@ -359,9 +362,16 @@ class SupabaseStore(PersistenceStore):
     # -- lifecycle ----------------------------------------------------------
 
     def clear(self) -> None:
-        """Wipe all hot-memory tables (called on death / reincarnation)."""
-        for table in self._ROW_TABLES + self._LIST_TABLES:
+        """Reset hot-memory state (called on death / reincarnation).
+
+        Preserves the permanent soul-crystal archive — soul crystals are
+        §10 Layer 2/3 permanent memory and must survive the wipe. Only the
+        dying life's hot-memory tables (debt_state, wallet, life_record,
+        events) are reset.
+        """
+        for table in self._ROW_TABLES:
             self._delete_all(table)
+        self._delete_all("events")
 
 
 # ---------------------------------------------------------------------------
