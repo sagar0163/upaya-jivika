@@ -350,6 +350,8 @@ New life starts (life-00N+1)
     → Read all previous soul-crystal.json files from HuggingFace
     → NVIDIA NIM compresses them into Ancestral Memory block
     → Inject Ancestral Memory into system prompt
+    → Apply Respawn Policy: CARRY_FORWARD restores empirical task scores,
+      FRESH_SLATE starts a clean task-knowledge slate (src/respawn_policy.py)
     → Freshness gate: cross-reference old wisdom against current DDG research
     → Tag repo: life-00N+1-born
     → Begin
@@ -399,6 +401,7 @@ diary_writer.py      — GitHub markdown + HuggingFace JSONL logger
 cold_archive.py      — Layer 3: push every life event as JSONL to HF dataset
 soul_crystal.py      — death-time life summarisation via NVIDIA NIM
 ancestral_memory.py  — rebirth loader, compresses all past soul crystals
+respawn_policy.py    — fresh-slate vs carry-forward empirical task scores on rebirth
 dashboard.py         — Rich terminal UI, live status
 ```
 
@@ -432,7 +435,7 @@ dashboard.py         — Rich terminal UI, live status
 | 🔴 | CAPTCHA handling | Fiverr/Upwork bot detection — no bypass strategy |
 | 🔴 | Withdrawal mechanism | UI for user to move pools to real bank account |
 | 🟡 | Ethical guardrail | **SOLVED** — `src/guardrails.py` hard blacklist (spam/fake review/plagiarism/ToS violation/illegal) enforced in `task_scorer` + `task_executor` even in Terminal state |
-| 🟡 | Respawn policy | Fresh slate vs carry forward task scores? |
+| 🟡 | Respawn policy | **SOLVED** (`src/respawn_policy.py`) — `FRESH_SLATE` vs `CARRY_FORWARD` of empirical task scores on rebirth |
 | 🟡 | Human approval gate | User confirm before AI spends from free pool? |
 | ✅ | Audit trail | **SOLVED** — src/audit_trail.py records every scored/executed decision with reasoning, state + debt |
 | ✅ | Alert system | **SOLVED**: `src/alert_system.py` pluggable notifiers (default logging) fire once on entering danger states & on death |
@@ -506,7 +509,8 @@ survival-ai/
 │   ├── task_executor.py
 │   ├── diary_writer.py
 │   ├── soul_crystal.py
-│   └── ancestral_memory.py
+│   ├── ancestral_memory.py
+│   └── respawn_policy.py
 ├── api/
 │   └── main.py          ← FastAPI: Payoneer webhook + /api/* endpoints
 ├── tests/

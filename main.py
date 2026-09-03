@@ -28,6 +28,7 @@ from src.debt_engine import DebtEngine, DebtState, DifficultyMode
 from src.diary import DiaryWriter
 from src.persistence import PersistenceStore, create_persistence_store
 from src.research_loop import ResearchAgent
+from src.respawn_policy import RespawnPolicyEngine
 from src.soul_crystal import LifeRecord, ReincarnationEngine
 from src.state_machine import SurvivalStateMachine
 from src.wallet import Wallet
@@ -97,6 +98,7 @@ class SurvivalLoop:
         self.diary = DiaryWriter()
         self.cold_archive = ColdArchive()
         self.alerts = AlertSystem()
+        self.respawn = RespawnPolicyEngine()
 
         # Wire persistence on every debt tick
         self.debt_engine._on_tick = self._on_tick  # type: ignore[assignment]
@@ -296,6 +298,7 @@ class SurvivalLoop:
         self.state_machine.reset()
         self.wallet = Wallet()
         self.alerts.reset()
+        self.respawn.on_reincarnate()
         self._life_record = self.reincarnation.start_new_life(new_life_num)
         self._event_log = [f"Life {new_life_num} born"]
 
@@ -374,6 +377,28 @@ class SurvivalLoop:
         self.state_machine.update(self.debt_engine.debt)
         self.wallet.debt = self.debt_engine.debt
 
+    def record_task_outcome(
+        self,
+        *,
+        platform: str,
+        task_type: str,
+        success: bool,
+        amount_earned: Decimal = Decimal("0"),
+        time_spent_hours: Decimal = Decimal("0"),
+    ) -> None:
+        """Record one empirical task outcome into respawn policy knowledge.
+
+        Call this wherever a task-execution result is produced so the reborn
+        agent inherits (or deliberately forgets) what actually paid.
+        """
+        self.respawn.record_outcome(
+            platform=platform,
+            task_type=task_type,
+            success=success,
+            amount_earned=amount_earned,
+            time_spent_hours=time_spent_hours,
+        )
+
     # -- lifecycle ----------------------------------------------------------
 
     def start(self) -> None:
@@ -432,6 +457,8 @@ class SurvivalLoop:
             ),
             "event_count": len(self._event_log),
             "soul_crystals": len(self.reincarnation.soul_crystals),
+            "respawn_policy": self.respawn.policy.value,
+            "task_knowledge_entries": len(self.respawn),
         }
 
 
