@@ -434,7 +434,7 @@ dashboard.py         — Rich terminal UI, live status
 | 🟡 | Human approval gate | User confirm before AI spends from free pool? |
 | 🟡 | Audit trail | Every decision logged with full reasoning |
 | 🟡 | Alert system | Notify user at Critical/Terminal (email? SMS?) |
-| 🟡 | Task timeout | Max duration cap while debt keeps ticking |
+| ✅ | Task timeout | **SOLVED** — `asyncio.wait_for` cap in `TaskExecutor.execute_task` (default 300s); excess → failed result, $0 credit |
 
 ---
 
