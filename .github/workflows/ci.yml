@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci
+          elif [ -f package.json ]; then npm install
+          else echo "No package.json yet — skipping install"; fi
+
+      - name: Lint
+        run: |
+          if [ -f package.json ] && npm run | grep -q " lint"; then npm run lint
+          else echo "No lint script yet — skipping"; fi
+
+      - name: Test
+        run: |
+          if [ -f package.json ] && npm run | grep -q " test"; then npm test
+          else echo "No test script yet — skipping"; fi
