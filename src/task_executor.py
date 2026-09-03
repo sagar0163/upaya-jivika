@@ -16,18 +16,17 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
-from dataclasses import dataclass, field
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from src.task_scorer import (
+    PaymentMethod,
+    Platform,
     TaskCandidate,
     TaskResult,
-    Platform,
     TaskType,
-    PaymentMethod,
 )
-from src.wallet import Wallet, SpendRequest
+from src.wallet import Wallet
 
 logger = logging.getLogger(__name__)
 

@@ -1,9 +1,10 @@
 """Unit tests for wallet.py — dual-pool wallet."""
 
-import pytest
 from decimal import Decimal
 
-from src.wallet import Wallet, WalletError, SpendRequest
+import pytest
+
+from src.wallet import SpendRequest, Wallet, WalletError
 
 
 class TestCreditEarned:

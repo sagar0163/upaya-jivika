@@ -17,7 +17,7 @@ import json
 import logging
 import os
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 from github import Github, GithubException, UnknownObjectException
 from pydantic import BaseModel

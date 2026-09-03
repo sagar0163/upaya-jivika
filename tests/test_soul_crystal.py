@@ -1,17 +1,17 @@
 """Unit tests for soul_crystal.py — reincarnation logic."""
 
-import pytest
+from datetime import datetime, timezone
 from decimal import Decimal
-from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from src.soul_crystal import (
-    SoulCrystal,
-    DeathLog,
     LifeRecord,
     ReincarnationEngine,
-    generate_soul_crystal,
-    generate_death_log,
+    SoulCrystal,
     build_ancestral_memory,
+    generate_death_log,
+    generate_soul_crystal,
 )
 
 

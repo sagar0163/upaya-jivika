@@ -3,12 +3,12 @@
 All HTTP calls are mocked - no real API keys needed.
 """
 
-import os
-import json
 import asyncio
+import json
+import os
+from unittest.mock import AsyncMock, Mock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, Mock
-from datetime import datetime
 
 # Set dummy env vars before importing modules
 os.environ.setdefault("NVIDIA_API_KEY", "test-nvidia-key")
@@ -116,7 +116,7 @@ class TestRoutingOrder:
     """Test provider routing order logic."""
 
     def test_complex_routing_order(self):
-        from src.brain_router import get_routing_order, TaskType, Provider
+        from src.brain_router import Provider, TaskType, get_routing_order
         order = get_routing_order(TaskType.COMPLEX)
         assert order[0] == Provider.NVIDIA_NIM
         assert order[1] == Provider.CEREBRAS
@@ -124,19 +124,19 @@ class TestRoutingOrder:
         assert Provider.CLOUDFLARE == order[-1]  # Last resort
 
     def test_speed_routing_order(self):
-        from src.brain_router import get_routing_order, TaskType, Provider
+        from src.brain_router import Provider, TaskType, get_routing_order
         order = get_routing_order(TaskType.SPEED)
         assert order[0] == Provider.GROQ
         assert order[1] == Provider.NVIDIA_NIM
 
     def test_high_volume_routing_order(self):
-        from src.brain_router import get_routing_order, TaskType, Provider
+        from src.brain_router import Provider, TaskType, get_routing_order
         order = get_routing_order(TaskType.HIGH_VOLUME)
         assert order[0] == Provider.GEMINI_FLASH
         assert order[1] == Provider.FREE_LLM_API
 
     def test_general_routing_order(self):
-        from src.brain_router import get_routing_order, TaskType, Provider
+        from src.brain_router import Provider, TaskType, get_routing_order
         order = get_routing_order(TaskType.GENERAL)
         assert order[0] == Provider.FREE_LLM_API
 
@@ -146,9 +146,9 @@ class TestBrainRouter:
 
     @pytest.fixture
     def router(self):
-        from src.brain_router import BrainRouter, Provider
         # Reset singleton
         import src.brain_router as br
+        from src.brain_router import BrainRouter
         br._router = None
         return BrainRouter()
 
@@ -161,7 +161,7 @@ class TestBrainRouter:
     @pytest.mark.asyncio
     async def test_complete_success_first_provider(self, router):
         """Test successful completion on first provider."""
-        from src.brain_router import CompletionRequest, CompletionResponse, TaskType, Provider
+        from src.brain_router import CompletionRequest, CompletionResponse, Provider, TaskType
 
         # Mock the NVIDIA client
         mock_client = AsyncMock()
@@ -187,7 +187,7 @@ class TestBrainRouter:
     @pytest.mark.asyncio
     async def test_complete_failover_to_second_provider(self, router):
         """Test failover when first provider fails."""
-        from src.brain_router import CompletionRequest, CompletionResponse, TaskType, Provider
+        from src.brain_router import CompletionRequest, CompletionResponse, Provider, TaskType
 
         # Mock NVIDIA client to fail
         mock_nvidia = AsyncMock()
@@ -226,7 +226,7 @@ class TestBrainRouter:
     @pytest.mark.asyncio
     async def test_complete_all_providers_fail(self, router):
         """Test when all providers fail."""
-        from src.brain_router import CompletionRequest, CompletionResponse, TaskType, Provider
+        from src.brain_router import CompletionRequest, CompletionResponse, Provider, TaskType
 
         mock_client = AsyncMock()
         mock_client.complete.return_value = CompletionResponse(
@@ -251,7 +251,7 @@ class TestConvenienceFunction:
 
     @pytest.mark.asyncio
     async def test_complete_function(self):
-        from src.brain_router import complete, CompletionResponse, Provider, TaskType
+        from src.brain_router import CompletionResponse, Provider, TaskType, complete
 
         with patch("src.brain_router.get_brain_router") as mock_get_router:
             mock_router = AsyncMock()
@@ -437,7 +437,7 @@ class TestResearchAgent:
     @pytest.mark.asyncio
     async def test_research_success(self, agent):
         """Test full research cycle with mocked search, read, and reasoning."""
-        from src.research_loop import ResearchQuery, ResearchTopic, ResearchState
+        from src.research_loop import ResearchQuery, ResearchState, ResearchTopic
 
         # Mock searcher
         mock_search_results = [
@@ -519,7 +519,7 @@ class TestResearchLoop:
 
     @pytest.fixture
     def loop(self):
-        from src.research_loop import ResearchLoop, ResearchAgent
+        from src.research_loop import ResearchAgent, ResearchLoop
         agent = ResearchAgent()
         return ResearchLoop(agent=agent)
 
@@ -557,7 +557,7 @@ class TestQuickResearch:
 
     @pytest.mark.asyncio
     async def test_quick_research(self):
-        from src.research_loop import quick_research, ResearchTopic, ResearchResult
+        from src.research_loop import ResearchResult, ResearchTopic, quick_research
 
         with patch("src.research_loop.ResearchAgent") as MockAgent:
             mock_agent = AsyncMock()
@@ -606,10 +606,7 @@ class TestBrainRouterIntegration:
     @pytest.mark.asyncio
     async def test_full_failover_chain(self):
         """Test complete failover chain: NVIDIA -> Cerebras -> Mistral -> OpenRouter."""
-        from src.brain_router import (
-            BrainRouter, CompletionRequest, CompletionResponse,
-            TaskType, Provider
-        )
+        from src.brain_router import BrainRouter, CompletionRequest, CompletionResponse, Provider, TaskType
 
         router = BrainRouter()
         router._initialized = True

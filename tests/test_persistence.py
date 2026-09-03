@@ -9,19 +9,18 @@ import pytest
 from src.debt_engine import DebtState, DifficultyMode
 from src.persistence import (
     InMemoryStore,
-    create_persistence_store,
-    _debt_state_to_dict,
     _debt_state_from_dict,
-    _wallet_to_dict,
-    _wallet_from_dict,
-    _life_record_to_dict,
+    _debt_state_to_dict,
     _life_record_from_dict,
-    _soul_crystal_to_dict,
+    _life_record_to_dict,
     _soul_crystal_from_dict,
+    _soul_crystal_to_dict,
+    _wallet_from_dict,
+    _wallet_to_dict,
+    create_persistence_store,
 )
 from src.soul_crystal import LifeRecord, SoulCrystal
 from src.wallet import Wallet
-
 
 # ---------------------------------------------------------------------------
 # Serialisation helpers
