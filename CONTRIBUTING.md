@@ -11,3 +11,14 @@
 7. Pull `main` locally, then move to the next task.
 
 Do not amend or force-push shared branches once a PR is open.
+
+## Commit messages (Conventional Commits)
+
+Versioning is automated by [release-please](https://github.com/googleapis/release-please), which reads the **squash-merge commit message** (i.e. the PR title, since that becomes the squash commit subject) to decide version bumps and to write the changelog. Use this format for PR titles:
+
+- `feat: ...` — new feature → minor version bump
+- `fix: ...` — bug fix → patch version bump
+- `feat!: ...` or `fix!: ...` (or a `BREAKING CHANGE:` footer) → major version bump
+- `docs:`, `chore:`, `refactor:`, `test:`, `ci:` — no version bump, but still shows in the changelog
+
+On every push to `main`, release-please opens/updates a "Release PR" with the bumped version and changelog. Merging that PR tags the release and publishes a GitHub Release — no manual tagging needed.
