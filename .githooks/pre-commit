@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+if git diff --cached --name-only | grep -q '^artifact\.md$'; then
+  ./scripts/generate-readme.sh
+  git add README.md
+fi
