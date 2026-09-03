@@ -363,3 +363,48 @@ class TestStatusEndpoint:
         assert resp_503.status_code == 503
         assert resp_503.json()["detail"] == "initialising"
 
+
+# ---------------------------------------------------------------------------
+# WebSocket endpoint
+# ---------------------------------------------------------------------------
+
+class TestWebSocketBroadcast:
+    """Verify WebSocket broadcasts when loop events occur."""
+
+    def test_websocket_receives_debt_tick(self):
+        from fastapi.testclient import TestClient
+        import main as main_mod
+
+        @main_mod.asynccontextmanager
+        async def _noop_lifespan(app):
+            yield
+
+        test_app = main_mod.FastAPI(title="test", lifespan=_noop_lifespan)
+        test_app.router.routes.extend(main_mod.app.router.routes)
+
+        store = InMemoryStore()
+        loop = main_mod.SurvivalLoop(persistence=store)
+        main_mod._loop = loop
+        
+        # TestClient uses a synchronous environment by default, 
+        # so we ensure _event_loop is set correctly for tests.
+        import asyncio
+        try:
+            loop._event_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop._event_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop._event_loop)
+
+        client = TestClient(test_app)
+        
+        with client.websocket_connect("/ws") as websocket:
+            # Trigger a debt tick
+            loop.debt_tick()
+            
+            # Since TestClient runs synchronous and threadsafe async calls might 
+            # execute asynchronously, we receive the JSON message synchronously.
+            data = websocket.receive_json()
+            assert data["event"] == "debt_tick"
+            assert data["debt"] == "0.50"
+
+        main_mod._loop = None
