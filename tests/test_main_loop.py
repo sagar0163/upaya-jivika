@@ -3,6 +3,8 @@
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
+import pytest
+
 from src.debt_engine import DebtEngine
 from src.persistence import InMemoryStore
 from src.soul_crystal import ReincarnationEngine
@@ -373,48 +375,71 @@ class TestStatusEndpoint:
 class TestWebSocketBroadcast:
     """Verify WebSocket broadcasts when loop events occur."""
 
-    def test_websocket_receives_debt_tick(self):
-        from fastapi.testclient import TestClient
+    @pytest.mark.asyncio
+    async def test_websocket_receives_debt_tick(self):
+        """A connected client receives a debt_tick broadcast when a tick fires.
+
+        A real server is used so the SurvivalLoop's event loop is the same loop
+        that owns the websockets — the broadcast is delivered deterministically
+        instead of being raced across two event loops (which made the old
+        TestClient-based version flaky).
+        """
+        import asyncio
+        import json
+        import threading
+
+        import uvicorn
+        import websockets
 
         import main as main_mod
 
-        @main_mod.asynccontextmanager
-        async def _noop_lifespan(app):
-            yield
+        holder: dict[str, object] = {}
 
-        test_app = main_mod.FastAPI(title="test", lifespan=_noop_lifespan)
+        @main_mod.asynccontextmanager
+        async def _test_lifespan(app):
+            holder["loop"] = asyncio.get_running_loop()
+            main_mod._loop = main_mod.SurvivalLoop(
+                persistence=InMemoryStore()
+            )
+            yield
+            main_mod._loop = None
+
+        test_app = main_mod.FastAPI(title="test", lifespan=_test_lifespan)
         test_app.router.routes.extend(main_mod.app.router.routes)
 
-        store = InMemoryStore()
-        loop = main_mod.SurvivalLoop(persistence=store)
-        main_mod._loop = loop
-        
-        # TestClient uses a synchronous environment by default, 
-        # so we ensure _event_loop is set correctly for tests.
-        import asyncio
+        server = uvicorn.Server(
+            uvicorn.Config(test_app, host="127.0.0.1", port=0, log_level="error")
+        )
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+
         try:
-            loop._event_loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop._event_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop._event_loop)
+            while not server.started:
+                await asyncio.sleep(0.01)
+            port = server.servers[0].sockets[0].getsockname()[1]
+            uri = f"ws://127.0.0.1:{port}/ws"
 
-        client = TestClient(test_app)
-        
-        with client.websocket_connect("/ws") as websocket:
-            # Consume the initial status snapshot sent on connection.
-            snapshot = websocket.receive_json()
-            assert snapshot["event"] == "status_snapshot"
+            for _ in range(200):
+                if holder.get("loop") is not None:
+                    break
+                await asyncio.sleep(0.01)
+            assert holder["loop"] is not None
 
-            # Trigger a debt tick
-            loop.debt_tick()
+            async with websockets.connect(uri) as websocket:
+                first = json.loads(await websocket.recv())
+                assert first["event"] == "status_snapshot"
 
-            # Since TestClient runs synchronous and threadsafe async calls might
-            # execute asynchronously, we receive the JSON message synchronously.
-            data = websocket.receive_json()
-            assert data["event"] == "debt_tick"
-            assert data["debt"] == "0.50"
+                main_mod._loop.debt_tick()
 
-        main_mod._loop = None
+                broadcast = json.loads(
+                    await asyncio.wait_for(websocket.recv(), timeout=5)
+                )
+                assert broadcast["event"] == "debt_tick"
+                assert broadcast["debt"] == "0.50"
+        finally:
+            server.should_exit = True
+            thread.join(timeout=5)
+            main_mod._loop = None
 
 
 # ---------------------------------------------------------------------------
