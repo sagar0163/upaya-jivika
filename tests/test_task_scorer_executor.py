@@ -1178,8 +1178,10 @@ class TestTaskExecutor:
         artifact.md §14 "Task timeout" — a stuck task must not run indefinitely
         while debt keeps ticking, so the executor reports failure with $0.
         """
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
+        import asyncio
+
         from src.task_executor import ClickworkerConnector
+        from src.task_scorer import TaskCandidate
 
         async def _stuck_execute_task(candidate):
             await asyncio.sleep(30)  # far longer than any sane cap
