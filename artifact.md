@@ -412,10 +412,10 @@ dashboard.py         — Rich terminal UI, live status
 | Narrative diary | GitHub public repo | $0 | Unlimited text storage |
 | Cold archive | HuggingFace public dataset | $0 | Effectively unlimited |
 
-**Unresolved infrastructure items:**
-- Credentials storage — API keys + platform passwords (Render env vars? Supabase vault?)
-- ✅ ~~Playwright session persistence across Render restarts~~ — **SOLVED** in `task_executor.py`: platform cookies are persisted to `.uj_sessions/<platform>_cookies.json` and replayed into fresh browser contexts, so the agent stays logged in across deployments / sleep cycles (see the `BrowserSessionManager` in `task_executor.py`).
-- Per-provider token usage tracker to avoid silent rate-limit failures
+**Resolved infrastructure items:**
+- ✅ Credentials storage — `src/vault.py` (CredentialsVault): API keys read from Render env vars; platform passwords persisted to a Supabase `credentials` table (auto-bootstrapped), with in-memory overrides + env fallback.
+- ✅ Playwright session persistence across Render restarts — **SOLVED** in `task_executor.py`: platform cookies are persisted to `.uj_sessions/<platform>_cookies.json` and replayed into fresh browser contexts, so the agent stays logged in across deployments / sleep cycles (see the `BrowserSessionManager` in `task_executor.py`).
+- ✅ Per-provider token usage tracker — `src/rate_limiter.py` (RateLimitTracker) records calls-per-provider across minute/day windows (Supabase-persisted) and `brain_router.py` pre-emptively skips a provider approaching its limit instead of failing over reactively after an error.
 
 ---
 
@@ -543,7 +543,7 @@ services:
 | `PAYONEER_WEBHOOK_SECRET` | ✓ | — | FastAPI webhook only |
 | `GITHUB_TOKEN` | — | ✓ built-in | diary_writer |
 | `HF_TOKEN` | ✓ | ✓ | hf_sync |
-| Platform credentials | — | — | Encrypted column in Supabase |
+| Platform credentials | ✓ via vault | — | `credentials` table in Supabase via `src/vault.py` (auto-created, keyed by provider + key) |
 
 ### Branching strategy
 

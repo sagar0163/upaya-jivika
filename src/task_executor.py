@@ -35,6 +35,7 @@ from src.task_scorer import (
     TaskType,
     PaymentMethod,
 )
+from src.vault import CredentialsVault
 from src.wallet import Wallet, SpendRequest
 
 logger = logging.getLogger(__name__)
@@ -754,6 +755,7 @@ class TaskExecutor:
         headless: bool = True,
         max_concurrent_tasks: int = 1,
         session_dir: Optional[str] = None,
+        vault: Optional[CredentialsVault] = None,
     ) -> None:
         self.wallet = wallet
         self.headless = headless
@@ -764,6 +766,7 @@ class TaskExecutor:
         self._connectors: dict[Platform, PlatformConnector] = {}
         self._credentials: dict[Platform, dict] = {}
         self._active_sessions: set[str] = set()
+        self._vault = vault
         self._running = False
 
     async def start(self) -> None:
@@ -784,18 +787,41 @@ class TaskExecutor:
         logger.info("TaskExecutor stopped")
 
     def set_credentials(self, platform: Platform, credentials: dict) -> None:
-        """Set credentials for a platform."""
+        """Set credentials for a platform.
+
+        Also persists platform password to the vault if one is available,
+        so credentials survive Render restarts (artifact.md §13).
+        """
         self._credentials[platform] = credentials
+        if self._vault is not None and "password" in credentials:
+            self._vault.set(platform.value, credentials["password"], key="password")
+        if self._vault is not None and "email" in credentials:
+            self._vault.set(platform.value, credentials["email"], key="email")
 
     async def _get_connector(self, platform: Platform) -> PlatformConnector:
-        """Get or create a connector for a platform."""
+        """Get or create a connector for a platform.
+
+        Credential lookup order:
+        1. In-memory ``_credentials`` dict (set via ``set_credentials``).
+        2. Vault (Supabase-stored platform passwords).
+        """
         if platform in self._connectors:
             return self._connectors[platform]
 
         if platform not in CONNECTORS:
             raise ExecutionError(f"No connector for platform: {platform}")
 
-        if platform not in self._credentials:
+        # Try in-memory credentials first, then vault
+        creds = self._credentials.get(platform)
+        if creds is None and self._vault is not None:
+            pw = self._vault.get_password(platform.value)
+            em = self._vault.get(platform.value, key="email")
+            if pw is not None:
+                creds = {"email": em or "", "password": pw}
+                self._credentials[platform] = creds
+                logger.info(f"Loaded credentials for {platform.value} from vault")
+
+        if creds is None:
             raise ExecutionError(f"No credentials for platform: {platform}")
 
         ctx_name = f"{platform.value}_ctx"
@@ -803,8 +829,7 @@ class TaskExecutor:
         connector_class = CONNECTORS[platform]
         connector = connector_class(platform, context)
 
-        # Login
-        success = await connector.login(self._credentials[platform])
+        success = await connector.login(creds)
         if not success:
             raise ExecutionError(f"Login failed for {platform}")
 
