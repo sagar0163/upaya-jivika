@@ -272,7 +272,7 @@ Platform earns
 | CAPTCHA handler | ❌ Gap | Fiverr/Upwork use bot detection |
 | Code sandbox | ❌ Gap | For testing micro-tools before selling |
 | Task memory | ❌ Gap | Outcome scoring per task type |
-| Alert system | ❌ Gap | Notify user on Critical/Terminal |
+| Alert system | ✅ SOLVED | Pluggable notifiers fire once on entering Critical/Terminal & on death (`src/alert_system.py`) |
 
 ---
 
@@ -432,8 +432,8 @@ dashboard.py         — Rich terminal UI, live status
 | 🟡 | Ethical guardrail | **SOLVED** — `src/guardrails.py` hard blacklist (spam/fake review/plagiarism/ToS violation/illegal) enforced in `task_scorer` + `task_executor` even in Terminal state |
 | 🟡 | Respawn policy | Fresh slate vs carry forward task scores? |
 | 🟡 | Human approval gate | User confirm before AI spends from free pool? |
-| 🟡 | Audit trail | **SOLVED** — src/audit_trail.py records every scored/executed decision with reasoning, state + debt |
-| 🟡 | Alert system | Notify user at Critical/Terminal (email? SMS?) |
+| ✅ | Audit trail | **SOLVED** — src/audit_trail.py records every scored/executed decision with reasoning, state + debt |
+| ✅ | Alert system | **SOLVED**: `src/alert_system.py` pluggable notifiers (default logging) fire once on entering danger states & on death |
 | ✅ | Task timeout | **SOLVED** — `asyncio.wait_for` cap in `TaskExecutor.execute_task` (default 300s); excess → failed result, $0 credit |
 
 ---

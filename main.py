@@ -21,6 +21,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
+from src.alert_system import AlertSystem
 from src.ancestral_memory import AncestralMemory, load_ancestral_memory
 from src.cold_archive import ColdArchive
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
@@ -75,7 +76,11 @@ class SurvivalLoop:
     - Death → soul crystal → reincarnation → hot-memory wipe
     """
 
-    def __init__(self, persistence: PersistenceStore | None = None, ws_mgr: ConnectionManager | None = ws_manager) -> None:
+    def __init__(
+        self,
+        persistence: PersistenceStore | None = None,
+        ws_mgr: ConnectionManager | None = ws_manager,
+    ) -> None:
         self.persistence = persistence or create_persistence_store()
         self.ws_manager = ws_mgr
         try:
@@ -91,6 +96,7 @@ class SurvivalLoop:
         self.research = ResearchAgent()
         self.diary = DiaryWriter()
         self.cold_archive = ColdArchive()
+        self.alerts = AlertSystem()
 
         # Wire persistence on every debt tick
         self.debt_engine._on_tick = self._on_tick  # type: ignore[assignment]
@@ -202,6 +208,17 @@ class SurvivalLoop:
             )
             self._broadcast_event("state_transition")
 
+            # Raise an alert when the agent first enters a danger state
+            alert = self.alerts.on_state_change(
+                previous=transition.previous.value,
+                current=transition.current.value,
+                debt=debt,
+            )
+            if alert:
+                logger.warning(
+                    "ALERT [%s] %s", alert.level.value.upper(), alert.message
+                )
+
         # Write daily diary entry
         try:
             self.diary.on_tick(
@@ -226,6 +243,11 @@ class SurvivalLoop:
         self.cold_archive.append_event(
             "death", {"debt": str(state.debt), "life_number": state.life_number}
         )
+
+        # Raise a terminal alert so the user knows the agent has died
+        alert = self.alerts.on_death(debt=state.debt, life_number=state.life_number)
+        if alert:
+            logger.warning("ALERT [%s] %s", alert.level.value.upper(), alert.message)
 
         # Generate soul crystal
         crystal = self.reincarnation.on_death(state.debt)
@@ -273,6 +295,7 @@ class SurvivalLoop:
         self.debt_engine.reset_for_new_life(new_life_num)
         self.state_machine.reset()
         self.wallet = Wallet()
+        self.alerts.reset()
         self._life_record = self.reincarnation.start_new_life(new_life_num)
         self._event_log = [f"Life {new_life_num} born"]
 
