@@ -257,6 +257,162 @@ class TestInMemoryStore:
 
 
 # ---------------------------------------------------------------------------
+# Serialisation robustness — missing fields / schema drift
+# ---------------------------------------------------------------------------
+
+class TestLifeRecordSerialisationRobustness:
+    """Guard against future schema drift in _life_record_from_dict."""
+
+    def test_missing_optional_fields_use_defaults(self):
+        d = {
+            "life_number": 5,
+            "born_at": datetime(2026, 9, 1, tzinfo=timezone.utc).isoformat(),
+            "total_earned": "1.00",
+            "peak_state": "thriving",
+        }
+        restored = _life_record_from_dict(d)
+        assert restored.life_number == 5
+        assert restored.events == []
+        assert restored.failed_strategies == []
+        assert restored.avoid == []
+        assert restored.best_platform == ""
+        assert restored.best_daily_avg == Decimal(0)
+
+    def test_empty_list_fields_roundtrip(self):
+        rec = LifeRecord(
+            life_number=1,
+            born_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+            total_earned=Decimal("0.00"),
+            peak_state="thriving",
+            events=[],
+            failed_strategies=[],
+            avoid=[],
+        )
+        d = _life_record_to_dict(rec)
+        restored = _life_record_from_dict(d)
+        assert restored.events == []
+        assert restored.failed_strategies == []
+        assert restored.avoid == []
+
+    def test_extra_fields_ignored(self):
+        d = {
+            "life_number": 3,
+            "born_at": datetime(2026, 9, 1, tzinfo=timezone.utc).isoformat(),
+            "total_earned": "0.50",
+            "peak_state": "surviving",
+            "unexpected_future_field": True,
+            "another_new_field": [1, 2, 3],
+        }
+        restored = _life_record_from_dict(d)
+        assert restored.life_number == 3
+        assert restored.total_earned == Decimal("0.50")
+
+    def test_zero_earned_roundtrip(self):
+        rec = LifeRecord(
+            life_number=1,
+            born_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+            total_earned=Decimal("0.00"),
+        )
+        d = _life_record_to_dict(rec)
+        restored = _life_record_from_dict(d)
+        assert restored.total_earned == Decimal("0.00")
+        assert restored.best_daily_avg == Decimal(0)
+
+
+class TestSoulCrystalSerialisationRobustness:
+    """Guard against future schema drift in _soul_crystal_from_dict."""
+
+    def test_missing_optional_fields_use_defaults(self):
+        d = {
+            "life": 2,
+            "born": datetime(2026, 9, 1, tzinfo=timezone.utc).isoformat(),
+            "died": datetime(2026, 9, 21, tzinfo=timezone.utc).isoformat(),
+            "lifespan_days": 20.0,
+            "total_earned": "2.50",
+        }
+        restored = _soul_crystal_from_dict(d)
+        assert restored.life == 2
+        assert restored.peak_state == "thriving"
+        assert restored.best_platform == ""
+        assert restored.best_daily_avg == Decimal(0)
+        assert restored.failed_strategies == []
+        assert restored.avoid == []
+        assert restored.key_lessons == []
+        assert restored.cause_of_death == ""
+
+    def test_empty_list_fields_roundtrip(self):
+        crystal = SoulCrystal(
+            life=1,
+            born=datetime(2026, 9, 1, tzinfo=timezone.utc),
+            died=datetime(2026, 9, 21, tzinfo=timezone.utc),
+            lifespan_days=20.0,
+            total_earned=Decimal("0.00"),
+            failed_strategies=[],
+            avoid=[],
+            key_lessons=[],
+        )
+        d = _soul_crystal_to_dict(crystal)
+        restored = _soul_crystal_from_dict(d)
+        assert restored.failed_strategies == []
+        assert restored.avoid == []
+        assert restored.key_lessons == []
+
+    def test_extra_fields_ignored(self):
+        d = {
+            "life": 1,
+            "born": datetime(2026, 9, 1, tzinfo=timezone.utc).isoformat(),
+            "died": datetime(2026, 9, 21, tzinfo=timezone.utc).isoformat(),
+            "lifespan_days": 20.0,
+            "total_earned": "1.00",
+            "future_field": "ignored",
+            "nested": {"a": [1]},
+        }
+        restored = _soul_crystal_from_dict(d)
+        assert restored.life == 1
+        assert restored.total_earned == Decimal("1.00")
+
+    def test_cause_of_death_empty_string(self):
+        d = {
+            "life": 1,
+            "born": datetime(2026, 9, 1, tzinfo=timezone.utc).isoformat(),
+            "died": datetime(2026, 9, 21, tzinfo=timezone.utc).isoformat(),
+            "lifespan_days": 20.0,
+            "total_earned": "3.00",
+        }
+        restored = _soul_crystal_from_dict(d)
+        assert restored.cause_of_death == ""
+
+
+class TestDebtStateSerialisationRobustness:
+    """Document that _debt_state_from_dict has no optional fields — all required."""
+
+    def test_missing_required_field_raises_keyerror(self):
+        d = {
+            "debt": "5.00",
+            "mode": "hard",
+            "alive": True,
+            "life_number": 3,
+            # missing born_at
+        }
+        with pytest.raises(KeyError):
+            _debt_state_from_dict(d)
+
+    def test_all_fields_required(self):
+        """Verify every field is expected — removing any one should raise."""
+        full = {
+            "debt": "5.00",
+            "mode": "hard",
+            "alive": True,
+            "life_number": 3,
+            "born_at": datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc).isoformat(),
+        }
+        for key in list(full.keys()):
+            partial = {k: v for k, v in full.items() if k != key}
+            with pytest.raises(KeyError):
+                _debt_state_from_dict(partial)
+
+
+# ---------------------------------------------------------------------------
 # Factory function
 # ---------------------------------------------------------------------------
 
