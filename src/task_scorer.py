@@ -15,6 +15,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from src.audit_trail import AuditTrail
 from src.guardrails import EthicalGuardrail, GuardrailVerdict, get_guardrail
 from src.state_machine import State, min_certainty, resolve_state
 
@@ -147,11 +148,13 @@ class TaskScorer:
         base_threshold: Decimal = Decimal("0.85"),
         min_pay_per_hour: Decimal = Decimal("1.00"),
         guardrail: EthicalGuardrail | None = None,
+        audit_trail: Optional[AuditTrail] = None,
     ) -> None:
         self.base_threshold = base_threshold
         self.min_pay_per_hour = min_pay_per_hour
         # Hard blacklist is absolute: never disabled by temperature/state.
         self.guardrail = guardrail or get_guardrail()
+        self.audit_trail = audit_trail
 
     def score(
         self,
@@ -183,7 +186,7 @@ class TaskScorer:
         # 1. Base certainty from platform table
         platform_data = PLATFORM_DATA.get(candidate.platform)
         if platform_data:
-            base_certainty = platform_data[0]
+            base_certainty, _typical_pay, _platform_payment, _auto_friendly = platform_data
             reasoning.append(f"Base platform certainty: {base_certainty} ({candidate.platform.value})")
         else:
             base_certainty = Decimal("0.5")
@@ -267,6 +270,18 @@ class TaskScorer:
             reasoning.append(f"FAIL: {final_score} < {threshold} (state={state.value})")
         else:
             reasoning.append(f"PASS: {final_score} >= {threshold} (state={state.value})")
+
+        if self.audit_trail is not None:
+            self.audit_trail.record_task_score(
+                task_title=candidate.title,
+                platform=candidate.platform.value,
+                final_score=final_score,
+                threshold=threshold,
+                passed=passes,
+                reasoning=reasoning,
+                survival_state=state.value,
+                debt=current_debt,
+            )
 
         return TaskScore(
             candidate=candidate,

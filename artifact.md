@@ -432,7 +432,7 @@ dashboard.py         — Rich terminal UI, live status
 | 🟡 | Ethical guardrail | **SOLVED** — `src/guardrails.py` hard blacklist (spam/fake review/plagiarism/ToS violation/illegal) enforced in `task_scorer` + `task_executor` even in Terminal state |
 | 🟡 | Respawn policy | Fresh slate vs carry forward task scores? |
 | 🟡 | Human approval gate | User confirm before AI spends from free pool? |
-| 🟡 | Audit trail | Every decision logged with full reasoning |
+| 🟡 | Audit trail | **SOLVED** — src/audit_trail.py records every scored/executed decision with reasoning, state + debt |
 | 🟡 | Alert system | Notify user at Critical/Terminal (email? SMS?) |
 | ✅ | Task timeout | **SOLVED** — `asyncio.wait_for` cap in `TaskExecutor.execute_task` (default 300s); excess → failed result, $0 credit |
 
