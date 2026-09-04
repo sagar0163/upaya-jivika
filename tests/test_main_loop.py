@@ -426,6 +426,7 @@ class TestDebtTickEndpoint:
 
     def test_debt_tick_endpoint_works(self):
         from fastapi.testclient import TestClient
+
         import main as main_mod
 
         @main_mod.asynccontextmanager
@@ -454,6 +455,7 @@ class TestDebtTickEndpoint:
     def test_debt_tick_deduplication(self):
         """Test that ticks within 23 hours are deduplicated."""
         from fastapi.testclient import TestClient
+
         import main as main_mod
 
         @main_mod.asynccontextmanager
@@ -489,9 +491,11 @@ class TestResearchTriggerEndpoint:
     """Test the /api/research/trigger endpoint."""
 
     def test_research_trigger_endpoint_works(self):
-        from fastapi.testclient import TestClient
-        import main as main_mod
         from unittest.mock import AsyncMock
+
+        from fastapi.testclient import TestClient
+
+        import main as main_mod
 
         @main_mod.asynccontextmanager
         async def _noop_lifespan(app):

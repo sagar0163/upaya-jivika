@@ -4,10 +4,8 @@ All Supabase calls are avoided — tests use in-memory stores only.
 """
 
 import os
-import asyncio
-import pytest
-from unittest.mock import patch
 
+import pytest
 
 # ============================================================================
 # vault.py — InMemorySecretStore
@@ -117,7 +115,7 @@ class TestCredentialsVault:
     """Test the vault facade with in-memory backend."""
 
     def _make_vault(self):
-        from src.vault import CredentialsVault, InMemorySecretStore
+        from src.vault import CredentialsVault
         # Use two InMemory stores: one pretending to be "supabase", one env
         # We can't actually test Supabase here, but we can test the override
         # and env fallback paths.
@@ -235,21 +233,21 @@ class TestRateLimitTracker:
     """Test the rate-limit tracker facade."""
 
     def test_all_providers_available_initially(self):
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore
+        from src.rate_limiter import InMemoryRateLimitStore, RateLimitTracker
         tracker = RateLimitTracker(InMemoryRateLimitStore())
         from src.rate_limiter import PROVIDER_LIMITS
         for name in PROVIDER_LIMITS:
             assert tracker.is_available(name) is True
 
     def test_record_usage_increments_counter(self):
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore
+        from src.rate_limiter import InMemoryRateLimitStore, RateLimitTracker
         tracker = RateLimitTracker(InMemoryRateLimitStore())
         tracker.record_usage("nvidia_nim")
         usage = tracker.get_usage("nvidia_nim")
         assert usage["minute"] == 1
 
     def test_provider_becomes_unavailable_at_limit(self):
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore
+        from src.rate_limiter import InMemoryRateLimitStore, RateLimitTracker
         # Mistral has rpm=2, so with safety_margin=0.85 the safe budget is 1
         tracker = RateLimitTracker(
             InMemoryRateLimitStore(), safety_margin=0.85
@@ -259,7 +257,7 @@ class TestRateLimitTracker:
         assert tracker.is_available("mistral") is False
 
     def test_provider_stays_available_below_limit(self):
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore
+        from src.rate_limiter import InMemoryRateLimitStore, RateLimitTracker
         # NVIDIA_NIM has rpm=40, safe budget = 34
         tracker = RateLimitTracker(InMemoryRateLimitStore())
         for _ in range(33):
@@ -267,25 +265,25 @@ class TestRateLimitTracker:
         assert tracker.is_available("nvidia_nim") is True
 
     def test_unknown_provider_always_available(self):
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore
+        from src.rate_limiter import InMemoryRateLimitStore, RateLimitTracker
         tracker = RateLimitTracker(InMemoryRateLimitStore())
         assert tracker.is_available("unknown_provider") is True
 
     def test_get_usage_unknown_provider(self):
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore
+        from src.rate_limiter import InMemoryRateLimitStore, RateLimitTracker
         tracker = RateLimitTracker(InMemoryRateLimitStore())
         usage = tracker.get_usage("nonexistent")
         assert usage == {"minute": 0, "day": 0}
 
     def test_get_limits(self):
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore, PROVIDER_LIMITS
+        from src.rate_limiter import PROVIDER_LIMITS, InMemoryRateLimitStore, RateLimitTracker
         tracker = RateLimitTracker(InMemoryRateLimitStore())
         limits = tracker.get_limits("nvidia_nim")
         assert limits == PROVIDER_LIMITS["nvidia_nim"]
         assert tracker.get_limits("nonexistent") is None
 
     def test_get_status(self):
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore, PROVIDER_LIMITS
+        from src.rate_limiter import PROVIDER_LIMITS, InMemoryRateLimitStore, RateLimitTracker
         tracker = RateLimitTracker(InMemoryRateLimitStore())
         status = tracker.get_status()
         assert len(status) == len(PROVIDER_LIMITS)
@@ -295,7 +293,7 @@ class TestRateLimitTracker:
             assert status[name]["usage_minute"] == 0
 
     def test_reset_provider(self):
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore
+        from src.rate_limiter import InMemoryRateLimitStore, RateLimitTracker
         tracker = RateLimitTracker(InMemoryRateLimitStore())
         tracker.record_usage("groq")
         tracker.record_usage("groq")
@@ -304,7 +302,7 @@ class TestRateLimitTracker:
         assert tracker.is_available("groq") is True
 
     def test_reset_all(self):
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore
+        from src.rate_limiter import InMemoryRateLimitStore, RateLimitTracker
         tracker = RateLimitTracker(InMemoryRateLimitStore())
         tracker.record_usage("nvidia_nim")
         tracker.record_usage("groq")
@@ -313,7 +311,7 @@ class TestRateLimitTracker:
         assert tracker.get_usage("groq") == {"minute": 0, "day": 0}
 
     def test_safety_margin_custom(self):
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore
+        from src.rate_limiter import InMemoryRateLimitStore, RateLimitTracker
         # With safety_margin=1.0 (no margin), budget equals limit
         tracker = RateLimitTracker(InMemoryRateLimitStore(), safety_margin=1.0)
         # Mistral rpm=2: count 1 should still be available with 100% margin
@@ -323,7 +321,7 @@ class TestRateLimitTracker:
         assert tracker.is_available("mistral") is False
 
     def test_checkpoint_and_restore(self):
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore
+        from src.rate_limiter import InMemoryRateLimitStore, RateLimitTracker
         store = InMemoryRateLimitStore()
         tracker = RateLimitTracker(store)
         tracker.record_usage("nvidia_nim")
@@ -335,7 +333,7 @@ class TestRateLimitTracker:
         assert usage["minute"] == 2
 
     def test_rpd_limit_enforced(self):
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore
+        from src.rate_limiter import InMemoryRateLimitStore, RateLimitTracker
         # Groq: rpd=14400, safe budget=int(14400*0.85)=12240
         # We won't fill that in a test, but verify the logic path works
         tracker = RateLimitTracker(InMemoryRateLimitStore())
@@ -355,8 +353,8 @@ class TestBrainRouterRateLimitIntegration:
     @pytest.mark.asyncio
     async def test_skips_rate_limited_provider(self):
         """BrainRouter.complete() should skip a provider whose RPM limit is reached."""
-        from src.brain_router import BrainRouter, CompletionRequest, TaskType, Provider
-        from src.rate_limiter import RateLimitTracker, InMemoryRateLimitStore
+        from src.brain_router import BrainRouter, CompletionRequest, Provider, TaskType
+        from src.rate_limiter import InMemoryRateLimitStore, RateLimitTracker
 
         # Mistral: rpm=2, safe budget with 0.85 margin = 1
         os.environ.setdefault("MISTRAL_API_KEY", "test-mistral-key")

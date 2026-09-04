@@ -3,6 +3,7 @@
 All browser sessions are mocked - no real Playwright or API keys needed.
 """
 
+import json
 import os
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -607,7 +608,7 @@ class TestClickworkerConnector:
         page.locator.side_effect = lambda selector: FakeLocator(count=2)
 
         connector = ClickworkerConnector(Platform.CLICKWORKER, context)
-        candidates = await connector.find_tasks()
+        await connector.find_tasks()
 
         # With a generic fake DOM we get 2 cards whose sub-selectors resolve to
         # empty text — the connector filters zero-title cards, so we assert the
@@ -695,7 +696,7 @@ class TestClickworkerConnector:
         """Test task marked not-completed when there is no submit button nor
         inputs and no success marker."""
         from src.task_executor import ClickworkerConnector
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         context, page = mock_context
         self._chain_page_locator(page, {
@@ -1265,7 +1266,7 @@ class TestMockExecuteTask:
     async def test_mock_execute_task_failure(self):
         """Test deterministic mock execution with an explicit failure."""
         from src.task_executor import mock_execute_task
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         candidate = TaskCandidate(
             platform=Platform.CLICKWORKER,

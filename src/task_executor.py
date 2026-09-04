@@ -23,7 +23,6 @@ import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from decimal import Decimal
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -41,7 +40,7 @@ from src.task_scorer import (
     TaskType,
 )
 from src.vault import CredentialsVault
-from src.wallet import SpendRequest, Wallet
+from src.wallet import Wallet
 
 logger = logging.getLogger(__name__)
 
