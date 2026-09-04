@@ -22,6 +22,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from src.ancestral_memory import AncestralMemory, load_ancestral_memory
+from src.cold_archive import ColdArchive
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
 from src.diary import DiaryWriter
 from src.persistence import PersistenceStore, create_persistence_store
@@ -89,6 +90,7 @@ class SurvivalLoop:
         self.reincarnation = ReincarnationEngine()
         self.research = ResearchAgent()
         self.diary = DiaryWriter()
+        self.cold_archive = ColdArchive()
 
         # Wire persistence on every debt tick
         self.debt_engine._on_tick = self._on_tick  # type: ignore[assignment]
@@ -157,6 +159,7 @@ class SurvivalLoop:
             life_num = self.reincarnation.next_life_number()
             self._life_record = self.reincarnation.start_new_life(life_num)
             self._persist_all()
+            self.cold_archive.begin_life(life_num)
             logger.info("Started new life: %d", life_num)
 
     def _persist_all(self) -> None:
@@ -174,12 +177,22 @@ class SurvivalLoop:
         transition = self.state_machine.update(debt)
         self.wallet.debt = debt
         self._event_log.append(f"Debt tick: ${debt}")
+
+        # Layer 3 cold archive — every debt tick survives hot-memory wipe
+        self.cold_archive.append_event(
+            "debt_tick", {"debt": str(debt), "state": self.state_machine.state.value}
+        )
+
         self._persist_all()
         self._broadcast_event("debt_tick")
 
         if transition:
             self._event_log.append(
                 f"State: {transition.previous.value} → {transition.current.value}"
+            )
+            self.cold_archive.append_event(
+                "state_transition",
+                {"from": transition.previous.value, "to": transition.current.value},
             )
             logger.info(
                 "State transition: %s → %s (debt $%s)",
@@ -210,6 +223,9 @@ class SurvivalLoop:
         self._event_log.append(
             f"DEATH: debt ${state.debt}, life {state.life_number}"
         )
+        self.cold_archive.append_event(
+            "death", {"debt": str(state.debt), "life_number": state.life_number}
+        )
 
         # Generate soul crystal
         crystal = self.reincarnation.on_death(state.debt)
@@ -239,6 +255,8 @@ class SurvivalLoop:
             logger.exception("Diary write failed on death")
 
         # --- Reincarnation ---
+        # Flush remaining events before switching life in the archive
+        self.cold_archive.flush()
         self._reincarnate(state)
 
     def _reincarnate(self, state: DebtState) -> None:
@@ -257,6 +275,10 @@ class SurvivalLoop:
         self.wallet = Wallet()
         self._life_record = self.reincarnation.start_new_life(new_life_num)
         self._event_log = [f"Life {new_life_num} born"]
+
+        # Begin the new life in the cold archive (new JSONL shard)
+        self.cold_archive.reset_for_new_life()
+        self.cold_archive.begin_life(new_life_num)
 
         # Wipe hot-memory state, preserving the permanent soul-crystal archive
         self.persistence.clear()
@@ -304,6 +326,14 @@ class SurvivalLoop:
             for r in results:
                 self._event_log.append(
                     f"Research: {r.topic.value} (confidence {r.confidence:.2f})"
+                )
+                self.cold_archive.append_event(
+                    "research",
+                    {
+                        "topic": r.topic.value,
+                        "confidence": r.confidence,
+                        "summary": r.summary,
+                    },
                 )
             self._persist_all()
             logger.info("Research cycle complete: %d topics", len(results))

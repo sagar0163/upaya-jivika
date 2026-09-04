@@ -396,6 +396,7 @@ research_loop.py     — DDG search + Jina read + NVIDIA reasoning
 task_scorer.py       — certainty scoring for each potential task
 task_executor.py     — platform connectors, Playwright sessions
 diary_writer.py      — GitHub markdown + HuggingFace JSONL logger
+cold_archive.py      — Layer 3: push every life event as JSONL to HF dataset
 soul_crystal.py      — death-time life summarisation via NVIDIA NIM
 ancestral_memory.py  — rebirth loader, compresses all past soul crystals
 dashboard.py         — Rich terminal UI, live status
@@ -544,7 +545,7 @@ services:
 | All AI API keys | ✓ | ✓ | brain_router + cron jobs |
 | `PAYONEER_WEBHOOK_SECRET` | ✓ | — | FastAPI webhook only |
 | `GITHUB_TOKEN` | — | ✓ built-in | diary_writer |
-| `HF_TOKEN` | ✓ | ✓ | hf_sync |
+| `HF_TOKEN` | ✓ | ✓ | hf_sync + cold_archive (Layer 3) |
 | Platform credentials | ✓ via vault | — | `credentials` table in Supabase via `src/vault.py` (auto-created, keyed by provider + key) |
 
 ### Branching strategy
