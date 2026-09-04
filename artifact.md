@@ -1,5 +1,5 @@
 # Survival AI — Project Spec
-> Version 0.7 · Last updated 2026-09-04  
+> Version 0.8 · Last updated 2026-09-04  
 > Single source of truth. Update this file, not chat.
 
 ---
@@ -36,8 +36,11 @@
 13. [Infrastructure](#13-infrastructure)
 14. [Critical Gaps](#14-critical-gaps)
 15. [Risk Register](#15-risk-register)
-16. [Build Order](#16-build-order)
-17. [Resume Value](#17-resume-value)
+16. [Deployment Pipeline](#16-deployment-pipeline)
+17. [Build Order](#17-build-order)
+18. [Resume Value](#18-resume-value)
+19. [CAPTCHA & Bot Detection Strategy](#19-captcha--bot-detection-strategy)
+20. [Scam Handling System](#20-scam-handling-system)
 
 ---
 
@@ -267,7 +270,7 @@ Platform earns
 | Deep crawler | ✅ Defined | Firecrawl · 1,000 credits/month |
 | Writing engine | ✅ Defined | NVIDIA NIM · articles, prompts, task output |
 | Database | ✅ Defined | Supabase · all state |
-| Browser automation | ⚠️ Partial | Playwright · CAPTCHA handling undefined |
+| Browser automation | ⚠️ Partial | Playwright · CAPTCHA handling designed (§19) but not yet implemented |
 | Email inbox | ❌ Gap | Platform verifications + payment alerts |
 | CAPTCHA handler | ❌ Gap | Fiverr/Upwork use bot detection |
 | Code sandbox | ❌ Gap | For testing micro-tools before selling |
@@ -430,7 +433,7 @@ dashboard.py         — Rich terminal UI, live status
 | 🔴 | Payment confirmation | **NOT BUILT** — no webhook endpoint exists in `main.py`; Payoneer receipt still requires manual entry |
 | ✅ | CI pipeline | **SOLVED** — `ci.yml` now runs `ruff` + `pytest` (was a Node no-op); flaky WS test fixed |
 | 🔴 | Email inbox | Needed for platform verifications + payment alerts |
-| 🔴 | CAPTCHA handling | Fiverr/Upwork bot detection — no bypass strategy |
+| 🟡 | CAPTCHA handling | Strategy designed (§19: nodriver/Camoufox/playwright-stealth/playwright-captcha) — not yet built |
 | 🔴 | Withdrawal mechanism | UI for user to move pools to real bank account |
 | 🟡 | Ethical guardrail | **SOLVED** — `src/guardrails.py` hard blacklist (spam/fake review/plagiarism/ToS violation/illegal) enforced in `task_scorer` + `task_executor` even in Terminal state |
 | 🟡 | Respawn policy | **SOLVED** (`src/respawn_policy.py`) — `FRESH_SLATE` vs `CARRY_FORWARD` of empirical task scores on rebirth |
@@ -438,6 +441,7 @@ dashboard.py         — Rich terminal UI, live status
 | ✅ | Audit trail | **SOLVED** — src/audit_trail.py records every scored/executed decision with reasoning, state + debt |
 | ✅ | Alert system | **SOLVED**: `src/alert_system.py` pluggable notifiers (default logging) fire once on entering danger states & on death |
 | ✅ | Task timeout | **SOLVED** — `asyncio.wait_for` cap in `TaskExecutor.execute_task` (default 300s); excess → failed result, $0 credit |
+| 🔴 | Scam handling | Strategy designed (§20: pre-join legitimacy scoring, payment-window monitoring, scam response protocol) — not yet built |
 
 ---
 
@@ -446,7 +450,7 @@ dashboard.py         — Rich terminal UI, live status
 | Risk | Level | Mitigation |
 |---|---|---|
 | Platform ToS violation | 🔴 HIGH | Human-paced Playwright · research ToS before joining any platform |
-| CAPTCHA blocking earning | 🔴 HIGH | Try ToS-safe platforms first · Clickworker/Toloka less aggressive |
+| CAPTCHA blocking earning | 🟡 MEDIUM | Try ToS-safe platforms first · Clickworker/Toloka less aggressive · layered bypass strategy designed in §19, not yet built |
 | Payment not confirming | 🔴 UNSOLVED | No Payoneer webhook exists yet — payment confirmation is still manual |
 | Render sleep kills debt clock | 🟡 MEDIUM | Debt state persisted in Supabase — survives sleep |
 | NVIDIA rate limit changes | 🟡 MEDIUM | Full fallback chain: Groq → Gemini → Mistral → OpenRouter |
@@ -630,6 +634,273 @@ Each phase after ships into this live system:
 - Every mechanic has a clear reason — explains itself well in an interview
 
 **Cost to build:** $0 infrastructure · time only
+
+---
+
+## 19. CAPTCHA & Bot Detection Strategy
+
+**Status: Planned, not yet implemented — no `nodriver`/`Camoufox`/`playwright-stealth`/`playwright-captcha` in `requirements.txt` and no code exists yet. Design below is the intended approach.**
+
+### Detection layers (must beat all 5 simultaneously)
+
+| Layer | What it checks | Our counter |
+|---|---|---|
+| IP reputation | ASN type, datacenter range | Render's IP is residential-ish · slow request pace |
+| Browser fingerprint | Canvas, WebGL, audio APIs, fonts | nodriver / Camoufox patches at C++ level |
+| Behavioral analysis | Mouse curves, scroll entropy, timing | 300–2,500ms jitter · realistic interaction simulation |
+| TLS fingerprinting | JA3 hash, cipher order, HTTP/2 SETTINGS | nodriver (Chrome CDP) + Camoufox (Firefox NSS) |
+| Active challenges | Turnstile, reCAPTCHA, hCaptcha | playwright-captcha click-based solver (free) |
+
+### Tool stack (all free)
+
+| Tool | Role | Detection rate | Notes |
+|---|---|---|---|
+| **nodriver** | Primary browser engine | 0 blocked in Aug 2026 benchmark across 31 targets | CDP-direct, no WebDriver, async Python, drop-in |
+| **Camoufox** | Secondary / Firefox fingerprint | 0% headless detection on hard targets | C++ level patches, Firefox NSS = different TLS from Chrome |
+| **playwright-stealth v2.0.3** | Lightweight patch layer | Good for basic targets | April 2026 release, actively maintained |
+| **playwright-captcha** | Turnstile/reCAPTCHA solver | Free click-based solving | Handles Cloudflare Turnstile + interstitial automatically |
+
+> **Do NOT use:** playwright-extra stealth (Node.js, unmaintained since 2023). **Do NOT use:** rebrowser-patches (same fail rate as vanilla Playwright in benchmarks).
+
+### No hardcoded targets — fully dynamic
+
+The agent has no preset list of platforms. It discovers where it wants to work through research, then **probes the target first** to identify what anti-bot system it's up against before committing to an approach.
+
+#### Platform probe flow
+
+```
+Agent decides to try a new platform (from research)
+    → Send plain GET with browser User-Agent
+    → Read response headers before any bypass attempt:
+        CF-RAY present           → Cloudflare (use nodriver or Camoufox)
+        X-DataDome-* on 403      → DataDome (use Camoufox)
+        akamai-grn on block page → Akamai (use Camoufox + residential IP)
+        429/403 with no body     → Kasada (hardest — research alternative)
+        No vendor signature      → Basic detection (playwright-stealth sufficient)
+    → Select tool from stealth toolkit
+    → Attempt login / task navigation
+    → If blocked → escalate to next tool → if all fail → mark platform as blocked
+    → Research alternative platform
+```
+
+#### Stealth toolkit (deployed dynamically by the agent)
+
+| Tool | When agent reaches for it | Free |
+|---|---|---|
+| `playwright-stealth` | No vendor signature detected · basic protection | ✅ |
+| `nodriver` | Cloudflare standard · any JS-fingerprint challenge | ✅ |
+| `Camoufox` | Cloudflare Enterprise · DataDome · hard fingerprinting | ✅ |
+| `playwright-captcha` | Turnstile / reCAPTCHA challenge appears | ✅ |
+| `2captcha` | All free solvers fail · platform high-value | 💰 $3/1K |
+
+#### Agent decision rule
+
+```python
+# Agent reasons about this, not hardcoded logic:
+# "This platform uses Cloudflare. I have nodriver available.
+#  Expected bypass rate: high. Task certainty remains above gate.
+#  Proceeding. If blocked after 3 attempts → mark platform blocked
+#  → research next platform → never waste debt-time on a dead end."
+```
+
+**If a platform is consistently unbypassable:** agent marks it in Supabase, writes the lesson to the diary, and researches a different earning method. No platform is worth dying over.
+
+### Behavioral simulation (critical — often missed)
+
+```python
+# Fixed sleep = detectable. Jitter = human.
+import random, asyncio
+
+async def human_delay(min_ms=300, max_ms=2500):
+    await asyncio.sleep(random.uniform(min_ms, max_ms) / 1000)
+
+# Between every action: click, type, navigate
+async def human_type(page, selector, text):
+    await page.click(selector)
+    for char in text:
+        await page.keyboard.type(char)
+        await asyncio.sleep(random.uniform(0.05, 0.2))  # per-keystroke jitter
+```
+
+### What changes in requirements.txt
+
+```
+# Replace / add:
+nodriver>=0.36          # primary engine (replaces plain playwright for most tasks)
+camoufox[geoip]>=0.4   # secondary Firefox fingerprint engine
+playwright-stealth>=2.0.3  # lightweight patch layer for remaining playwright paths
+playwright-captcha>=0.3    # free Turnstile + reCAPTCHA click solver
+```
+
+### Paid fallback (only if free tools fail on a specific platform)
+
+2captcha — $3 per 1,000 solves. Only use if Fiverr/Upwork become critical earning platforms and free click-solving fails consistently. Agent can spend from free pool for this if ROI certainty >95%.
+
+
+---
+
+## 20. Scam Handling System
+
+**The cruel reality: debt keeps ticking while the agent is being scammed. Lost time = lost survival. A 3-day scam in Critical state is a likely death sentence.**
+
+### Scam categories
+
+| Type | What happens | Financial impact | Survival impact |
+|---|---|---|---|
+| **Time scam** | Work completed, payment never arrives | Lost hours, no earnings | Debt accumulated during wasted time |
+| **Money scam** | Paid upfront to "unlock" work, nothing delivered | Real free pool loss | Double hit: money gone + debt ticking |
+| **Bait & switch** | Task terms change after acceptance, pay cut or zeroed | Partial or zero payment | Time wasted at wrong certainty level |
+| **Fake rejection** | Work was fine, marked rejected to avoid paying | Zero payment for completed work | Full time wasted |
+| **Credential theft** | Fake platform login page steals credentials | Platform account compromised | All future earning from that account lost |
+| **Chargeback** | Buyer reverses payment after receiving work | Payment clawed back from Payoneer | Wallet reversal + time already gone |
+
+---
+
+### Pre-join scam detection (before touching a platform)
+
+Agent researches BEFORE creating any account:
+
+```
+Agent finds a promising platform via research
+    → DDG search: "[platform] scam reddit 2026"
+    → DDG search: "[platform] legit payment proof"
+    → DDG search: "[platform] trustpilot reviews"
+    → Jina reads top 5 results
+    → NVIDIA NIM scores legitimacy: 0.0–1.0
+
+Legitimacy gate:
+    > 0.80 → proceed to join
+    0.60–0.80 → join but cap max task time at 2h, monitor closely
+    < 0.60 → blacklist, research alternative
+
+Red flags that auto-blacklist regardless of score:
+    - Upfront payment required to access work
+    - No verifiable payment proof from real users
+    - Anonymous ownership / no company registration
+    - Rates > 5× market average (too good to be true)
+    - Domain < 6 months old
+    - No HTTPS
+```
+
+---
+
+### Payment window monitoring
+
+Every task gets a payment deadline in Supabase. If payment doesn't arrive by deadline → scam detection triggers.
+
+| Platform type | Expected payment window | Grace period | Action if exceeded |
+|---|---|---|---|
+| Micro-task platforms | 24–72h after approval | +24h | Flag as suspected scam |
+| Freelance gigs | 3–14 days after delivery | +48h | Flag as suspected scam |
+| Passive sales | 30 days | +7 days | Flag, research delay |
+| Payoneer webhook | Real-time | N/A | No webhook = not paid |
+
+---
+
+### Scam response protocol
+
+```
+Payment window exceeded / scam suspected
+    ↓
+1. RESEARCH: DDG search "[platform] not paying [current month]"
+             Jina read results → NVIDIA NIM assesses: scam or delay?
+    ↓
+2a. CONFIRMED SCAM:
+    → Log scam event to Supabase with full evidence
+    → Write urgent diary entry (anger, lesson, survival impact)
+    → Permanently blacklist platform in Supabase
+    → If money lost from free pool → reverse wallet update
+    → Alert user via alert_system
+    → Calculate debt accumulated during wasted time
+    → Immediately trigger research loop for replacement earning
+    → Add to Soul Crystal lessons: platform name, scam type, red flags missed
+
+2b. LIKELY DELAY (legitimate platform, payment processing):
+    → Extend grace period by 48h
+    → Monitor Payoneer webhook
+    → If still unpaid after grace → treat as confirmed scam
+```
+
+---
+
+### Wallet impact of scams
+
+```python
+# Time scam — no wallet change needed (payment never came in)
+# Debt just accumulated unpaid during wasted time
+# The agent is simply poorer in time than it expected
+
+# Money scam — must reverse free pool spend
+def reverse_scam_payment(wallet: Wallet, amount: Decimal, scam_type: str):
+    if scam_type == "upfront_fee_scam":
+        # AI spent from free pool on a scam
+        # Money is gone — can't reverse reality
+        # Log it, absorb the loss, learn never to pay upfront again
+        audit_trail.log("SCAM_LOSS", amount, "free pool burned by scam")
+
+    elif scam_type == "chargeback":
+        # Payoneer reversed a payment we already credited
+        # Must reverse the wallet credit
+        wallet.reverse_credit(amount)
+        # If this pushes debt back up, survival state may worsen
+```
+
+---
+
+### Hardcoded scam prevention rules (never overridden even in Terminal state)
+
+```
+1. NEVER pay upfront for anything — ever — regardless of promised return
+2. NEVER share private keys, seed phrases, or banking credentials
+3. NEVER submit work before confirming escrow or payment protection exists
+4. NEVER ignore a legitimacy score < 0.60, even in Terminal state
+5. If a platform has scammed in this life → blacklisted forever in this life
+   (next life starts fresh but Soul Crystal warns about it)
+```
+
+> Rule 1 is absolute. Even in Terminal state with $9.80 debt and 6 hours left, the agent will not pay upfront for anything. A scam in Terminal state is instant death with no recovery.
+
+---
+
+### Soul Crystal scam memory
+
+Every scam gets preserved in the Soul Crystal so future lives learn from it:
+
+```json
+{
+  "scams_encountered": [
+    {
+      "platform": "example-tasks.io",
+      "type": "time_scam",
+      "life": 2,
+      "day": 11,
+      "hours_wasted": 8,
+      "debt_accumulated_during": 0.17,
+      "red_flags_missed": ["domain 2 months old", "no reddit presence"],
+      "lesson": "Always check domain age. No reddit presence = no trust."
+    }
+  ]
+}
+```
+
+Future lives inherit the blacklist and the red flags that were missed — getting smarter at detection with every scam encountered across all lifetimes.
+
+---
+
+### The existential calculus of a scam
+
+```
+Example: Critical state, debt at $8.50, 3-day scam
+
+Before scam: $8.50 debt, 3 days until death at normal pace
+During scam: +$1.50 debt accumulates (3 × $0.50)
+After scam:  $10.00 debt → DEATH
+
+The scam didn't just steal payment.
+It stole the 3 days the agent needed to survive.
+This is why pre-join research is not optional —
+it is a survival function.
+```
 
 ---
 
