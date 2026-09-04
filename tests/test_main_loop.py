@@ -404,8 +404,8 @@ class TestWebSocketBroadcast:
 
             # Trigger a debt tick
             loop.debt_tick()
-            
-            # Since TestClient runs synchronous and threadsafe async calls might 
+
+            # Since TestClient runs synchronous and threadsafe async calls might
             # execute asynchronously, we receive the JSON message synchronously.
             data = websocket.receive_json()
             assert data["event"] == "debt_tick"
