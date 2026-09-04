@@ -45,6 +45,7 @@ class DebtState(BaseModel):
     alive: bool = True
     life_number: int = 1
     born_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_tick_at: datetime | None = None
 
 
 class DebtEngine:
@@ -110,6 +111,7 @@ class DebtEngine:
             return self.state.debt
 
         self.state.debt += self._increment
+        self.state.last_tick_at = datetime.now(timezone.utc)
 
         if self._on_tick:
             self._on_tick(self.state.debt)

@@ -29,6 +29,7 @@ def _debt_state_to_dict(s: DebtState) -> dict[str, Any]:
         "alive": s.alive,
         "life_number": s.life_number,
         "born_at": s.born_at.isoformat(),
+        "last_tick_at": s.last_tick_at.isoformat() if s.last_tick_at else None,
     }
 
 
@@ -39,6 +40,7 @@ def _debt_state_from_dict(d: dict[str, Any]) -> DebtState:
         alive=d["alive"],
         life_number=d["life_number"],
         born_at=d["born_at"],
+        last_tick_at=d.get("last_tick_at"),
     )
 
 

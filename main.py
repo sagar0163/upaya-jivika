@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -461,3 +462,61 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
+
+# ---------------------------------------------------------------------------
+# API endpoints for GitHub Actions cron jobs
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/debt/tick")
+async def debt_tick_endpoint():
+    """Fire a single debt tick. Idempotent - safe to call multiple times.
+    
+    Returns the new debt amount and whether death was triggered.
+    """
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+
+    # Check if a tick was already performed in the last 23 hours (deduplication)
+    # This prevents double-charging if both APScheduler and GitHub Actions fire
+    debt_state = loop.persistence.load_debt_state()
+    if debt_state and debt_state.last_tick_at:
+        now = datetime.now(timezone.utc)
+        # If last tick was within 23 hours, skip (cron runs daily, APScheduler runs daily)
+        if (now - debt_state.last_tick_at) < timedelta(hours=23):
+            return {
+                "skipped": True,
+                "reason": "tick already performed recently",
+                "last_tick_at": debt_state.last_tick_at.isoformat(),
+                "debt": str(debt_state.debt),
+                "alive": debt_state.alive,
+            }
+
+    new_debt = loop.debt_tick()
+
+    return {
+        "skipped": False,
+        "debt": str(new_debt),
+        "alive": loop.debt_engine.alive,
+        "life_number": loop.debt_engine.state.life_number,
+    }
+
+
+@app.post("/api/research/trigger")
+async def research_trigger_endpoint():
+    """Trigger a research cycle.
+    
+    Returns the research results summary.
+    """
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+
+    await loop.research_trigger()
+
+    return {
+        "status": "completed",
+        "topics_researched": len(loop.research.get_history()),
+    }
