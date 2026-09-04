@@ -25,23 +25,22 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
-from dataclasses import dataclass, field
 
 if TYPE_CHECKING:
     from src.guardrails import EthicalGuardrail
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from src.guardrails import get_guardrail
 from src.task_scorer import (
+    PaymentMethod,
+    Platform,
     TaskCandidate,
     TaskResult,
-    Platform,
     TaskType,
-    PaymentMethod,
 )
 from src.vault import CredentialsVault
-from src.wallet import Wallet, SpendRequest
+from src.wallet import Wallet
 
 logger = logging.getLogger(__name__)
 

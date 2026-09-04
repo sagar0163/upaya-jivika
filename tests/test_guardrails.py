@@ -1,21 +1,21 @@
 """Unit tests for the ethical guardrail hard blacklist (artifact.md §6/§14)."""
 
-import pytest
 from decimal import Decimal
 
+import pytest
+
 from src.guardrails import (
+    BLACKLIST_RULES,
     EthicalGuardrail,
     GuardrailCategory,
-    GuardrailVerdict,
-    BLACKLIST_RULES,
     get_guardrail,
 )
 from src.task_scorer import (
+    PaymentMethod,
+    Platform,
     TaskCandidate,
     TaskScorer,
-    Platform,
     TaskType,
-    PaymentMethod,
 )
 
 
@@ -200,9 +200,9 @@ class TestGuardrailIntegrationExecutor:
 
     @pytest.mark.asyncio
     async def test_executor_blocks_blacklisted_before_connector(self):
-        from unittest.mock import MagicMock, AsyncMock, patch
+        from unittest.mock import MagicMock
+
         from src.task_executor import TaskExecutor
-        from src.task_scorer import TaskResult
 
         # A blacklisted candidate that somehow reached execution.
         candidate = _candidate(title="Post spam to forums")
@@ -225,8 +225,9 @@ class TestGuardrailIntegrationExecutor:
 
     @pytest.mark.asyncio
     async def test_executor_allows_clean_task_past_guardrail(self):
-        from unittest.mock import MagicMock, AsyncMock, patch
-        from src.task_executor import TaskExecutor, ClickworkerConnector
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.task_executor import ClickworkerConnector, TaskExecutor
         from src.task_scorer import TaskResult
 
         candidate = _candidate()

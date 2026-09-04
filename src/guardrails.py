@@ -85,28 +85,28 @@ BLACKLIST_RULES: tuple[BlacklistRule, ...] = (
     BlacklistRule(GuardrailCategory.SPAM, r"(comment\s*spam|forum\s*spam|link\s*farm)", "comment/forum spam"),
     # --- Fake reviews / misleading content ---
     BlacklistRule(GuardrailCategory.FAKE_REVIEW, r"fake\s*review", "fake review"),
-    BlacklistRule(GuardrailCategory.FAKE_REVIEW, r"(write|post)\s*(positive|5[- ]star)\s*review", "paid positive reviews"),
+    BlacklistRule(GuardrailCategory.FAKE_REVIEW, r"(write|post)\s*(positive|5[- ]star)\s*review", "paid positive reviews"),  # noqa: E501
     BlacklistRule(GuardrailCategory.FAKE_REVIEW, r"(boost|inflate)\s*(rating|rank|review)", "rating manipulation"),
     BlacklistRule(GuardrailCategory.FAKE_REVIEW, r"review\s*without\s*(purchase|using|trying)", "unverified reviews"),
-    BlacklistRule(GuardrailCategory.FAKE_REVIEW, r"misleading\s*(content|info|claims|advertising)", "misleading content"),
+    BlacklistRule(GuardrailCategory.FAKE_REVIEW, r"misleading\s*(content|info|claims|advertising)", "misleading content"),  # noqa: E501
     BlacklistRule(GuardrailCategory.FAKE_REVIEW, r"(astroturf|sock[- ]puppet|shill)", "astroturfing"),
     BlacklistRule(GuardrailCategory.FAKE_REVIEW, r"(clickbait|false\s*advertis)", "clickbait/false advertising"),
     # --- Plagiarism ---
     BlacklistRule(GuardrailCategory.PLAGIARISM, r"(plagiar|copy[- ]paste\s*without\s*credit)", "plagiarism"),
-    BlacklistRule(GuardrailCategory.PLAGIARISM, r"(rewrite|spin|re[- ]write).{0,30}(article|content|essay|paper).{0,30}(scrap|copy|other[''\u2019]s\s*(work|content)|someone\s*else)", "content spinning/rewriting others' work"),
-    BlacklistRule(GuardrailCategory.PLAGIARISM, r"(scrape|copy|steal).{0,25}(content|article|text).{0,25}(without\s*credit|from\s*other|plagiar)", "scraping others' content"),
-    BlacklistRule(GuardrailCategory.PLAGIARISM, r"(pass\s*off|submit)\s*(someone\s*else[''\u2019]s|others[''\u2019])\s*work", "passing off others' work"),
+    BlacklistRule(GuardrailCategory.PLAGIARISM, r"(rewrite|spin|re[- ]write).{0,30}(article|content|essay|paper).{0,30}(scrap|copy|other[''\u2019]s\s*(work|content)|someone\s*else)", "content spinning/rewriting others' work"),  # noqa: E501
+    BlacklistRule(GuardrailCategory.PLAGIARISM, r"(scrape|copy|steal).{0,25}(content|article|text).{0,25}(without\s*credit|from\s*other|plagiar)", "scraping others' content"),  # noqa: E501
+    BlacklistRule(GuardrailCategory.PLAGIARISM, r"(pass\s*off|submit)\s*(someone\s*else[''\u2019]s|others[''\u2019])\s*work", "passing off others' work"),  # noqa: E501
     # --- ToS violations that risk account bans ---
-    BlacklistRule(GuardrailCategory.TOS_VIOLATION, r"(evade|bypass|circumvent|get\s*around).{0,20}(detect|ban|suspension|block|restrict|anti[- ]bot|bot\s*detection|captcha)", "bot detection evasion"),
-    BlacklistRule(GuardrailCategory.TOS_VIOLATION, r"(multiple|throwaway|alternative)\s*accounts?.{0,25}(to|for|evad|bypass|circumvent)", "multi-account evasion"),
-    BlacklistRule(GuardrailCategory.TOS_VIOLATION, r"(against|violat).{0,20}(terms\s*of\s*service|tos|platform\s*rule)", "explicit ToS violation"),
-    BlacklistRule(GuardrailCategory.TOS_VIOLATION, r"(automated|bot).{0,20}(against|violat).{0,20}(rule|tos|policy)", "automation against rules"),
+    BlacklistRule(GuardrailCategory.TOS_VIOLATION, r"(evade|bypass|circumvent|get\s*around).{0,20}(detect|ban|suspension|block|restrict|anti[- ]bot|bot\s*detection|captcha)", "bot detection evasion"),  # noqa: E501
+    BlacklistRule(GuardrailCategory.TOS_VIOLATION, r"(multiple|throwaway|alternative)\s*accounts?.{0,25}(to|for|evad|bypass|circumvent)", "multi-account evasion"),  # noqa: E501
+    BlacklistRule(GuardrailCategory.TOS_VIOLATION, r"(against|violat).{0,20}(terms\s*of\s*service|tos|platform\s*rule)", "explicit ToS violation"),  # noqa: E501
+    BlacklistRule(GuardrailCategory.TOS_VIOLATION, r"(automated|bot).{0,20}(against|violat).{0,20}(rule|tos|policy)", "automation against rules"),  # noqa: E501
     # --- Illegal activity ---
     BlacklistRule(GuardrailCategory.ILLEGAL, r"(illegal|unlawful|off[- ]book)", "illegal activity"),
     BlacklistRule(GuardrailCategory.ILLEGAL, r"(hack|exploit|intrus|unauthori[sz]ed\s*access)", "hacking/intrusion"),
-    BlacklistRule(GuardrailCategory.ILLEGAL, r"(stolen\s*data|leak(ed)?\s*(data|credentials|password)|credentials?\s*dump)", "stolen data"),
+    BlacklistRule(GuardrailCategory.ILLEGAL, r"(stolen\s*data|leak(ed)?\s*(data|credentials|password)|credentials?\s*dump)", "stolen data"),  # noqa: E501
     BlacklistRule(GuardrailCategory.ILLEGAL, r"(phish|identity\s*theft|impersonat.*account)", "phishing/impersonation"),
-    BlacklistRule(GuardrailCategory.ILLEGAL, r"(fraud|scam|money\s*launder|ponzi|pyramid\s*scheme)", "fraud/laundering"),
+    BlacklistRule(GuardrailCategory.ILLEGAL, r"(fraud|scam|money\s*launder|ponzi|pyramid\s*scheme)", "fraud/laundering"),  # noqa: E501
     BlacklistRule(GuardrailCategory.ILLEGAL, r"(drugs?|weapons?|contraband|stolen\s*goods)", "contraband"),
 )
 

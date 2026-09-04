@@ -6,12 +6,10 @@ import json
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
-import pytest
 from github import GithubException, UnknownObjectException
 from pydantic import BaseModel
 
 from src.diary import DiaryWriter
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

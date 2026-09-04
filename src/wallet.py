@@ -10,10 +10,8 @@ Rules from artifact.md §4:
 from __future__ import annotations
 
 from decimal import Decimal
-from enum import Enum
-from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 
 class WalletError(Exception):

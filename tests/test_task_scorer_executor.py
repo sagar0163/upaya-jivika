@@ -3,13 +3,12 @@
 All browser sessions are mocked - no real Playwright or API keys needed.
 """
 
-import os
 import json
-import asyncio
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, Mock
+import os
 from decimal import Decimal
-from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 # Set dummy env vars before importing modules
 os.environ.setdefault("NVIDIA_API_KEY", "test-nvidia-key")
@@ -23,15 +22,10 @@ os.environ.setdefault("FREE_LLM_API_KEY", "test-freellm-key")
 
 # Import enums and models needed across tests
 from src.task_scorer import (
+    PaymentMethod,
     Platform,
     TaskType,
-    PaymentMethod,
-    TaskCandidate,
-    TaskScore,
-    TaskResult,
-    TaskScorer,
 )
-from src.state_machine import State
 
 # ============================================================================
 # Test task_scorer.py
@@ -74,7 +68,7 @@ class TestTaskCandidate:
     """Test TaskCandidate model."""
 
     def test_task_candidate_defaults(self):
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
         candidate = TaskCandidate(
             platform=Platform.CLICKWORKER,
             task_type=TaskType.MICROTASK,
@@ -93,7 +87,7 @@ class TestTaskCandidate:
         assert candidate.metadata == {}
 
     def test_task_candidate_custom(self):
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
         candidate = TaskCandidate(
             platform=Platform.TOLOKA,
             task_type=TaskType.MICROTASK,
@@ -116,8 +110,14 @@ class TestTaskScore:
     """Test TaskScore model."""
 
     def test_task_score_creation(self):
-        from src.task_scorer import TaskScore, TaskCandidate, Platform, TaskType, PaymentMethod, State
-        from src.state_machine import State as SMState
+        from src.task_scorer import (
+            PaymentMethod,
+            Platform,
+            State,
+            TaskCandidate,
+            TaskScore,
+            TaskType,
+        )
 
         candidate = TaskCandidate(
             platform=Platform.CLICKWORKER,
@@ -147,7 +147,7 @@ class TestPlatformData:
     """Test platform data constants."""
 
     def test_platform_data_exists(self):
-        from src.task_scorer import PLATFORM_DATA, Platform, PaymentMethod
+        from src.task_scorer import PLATFORM_DATA, PaymentMethod, Platform
         assert Platform.TOLOKA in PLATFORM_DATA
         assert Platform.CLICKWORKER in PLATFORM_DATA
         assert Platform.PROLIFIC in PLATFORM_DATA
@@ -175,7 +175,6 @@ class TestTaskScorer:
         return TaskScorer()
 
     def test_scorer_initialization(self, scorer):
-        from src.task_scorer import TaskScorer
         assert scorer.base_threshold == Decimal("0.85")
         assert scorer.min_pay_per_hour == Decimal("1.00")
 
@@ -187,8 +186,8 @@ class TestTaskScorer:
 
     def test_score_clickworker_thriving(self, scorer):
         """Test scoring Clickworker task in Thriving state (debt $0-2)."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
         from src.state_machine import State
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         candidate = TaskCandidate(
             platform=Platform.CLICKWORKER,
@@ -211,8 +210,8 @@ class TestTaskScorer:
 
     def test_score_clickworker_surviving(self, scorer):
         """Test scoring Clickworker task in Surviving state (debt $2-5)."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
         from src.state_machine import State
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         candidate = TaskCandidate(
             platform=Platform.CLICKWORKER,
@@ -233,8 +232,8 @@ class TestTaskScorer:
 
     def test_score_clickworker_struggling(self, scorer):
         """Test scoring Clickworker task in Struggling state (debt $5-7.50)."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
         from src.state_machine import State
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         candidate = TaskCandidate(
             platform=Platform.CLICKWORKER,
@@ -255,8 +254,8 @@ class TestTaskScorer:
 
     def test_score_clickworker_critical(self, scorer):
         """Test scoring Clickworker task in Critical state (debt $7.50-9.50)."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
         from src.state_machine import State
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         candidate = TaskCandidate(
             platform=Platform.CLICKWORKER,
@@ -277,8 +276,8 @@ class TestTaskScorer:
 
     def test_score_clickworker_terminal(self, scorer):
         """Test scoring Clickworker task in Terminal state (debt $9.50-10)."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
         from src.state_machine import State
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         candidate = TaskCandidate(
             platform=Platform.CLICKWORKER,
@@ -299,8 +298,7 @@ class TestTaskScorer:
 
     def test_score_low_pay_rejected(self, scorer):
         """Test that low pay tasks are rejected."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
-        from src.state_machine import State
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         candidate = TaskCandidate(
             platform=Platform.CLICKWORKER,
@@ -319,8 +317,7 @@ class TestTaskScorer:
 
     def test_score_paypal_payment_penalty(self, scorer):
         """Test that PayPal payment method gets lower reliability."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
-        from src.state_machine import State
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         candidate = TaskCandidate(
             platform=Platform.PROLIFIC,
@@ -340,8 +337,7 @@ class TestTaskScorer:
 
     def test_score_crypto_payment_penalty(self, scorer):
         """Test that crypto payment method gets lowest reliability."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
-        from src.state_machine import State
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         candidate = TaskCandidate(
             platform=Platform.DATA_ANNOTATION,
@@ -359,7 +355,7 @@ class TestTaskScorer:
 
     def test_score_batch_sorted(self, scorer):
         """Test batch scoring returns sorted results."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         candidates = [
             TaskCandidate(
@@ -390,7 +386,7 @@ class TestTaskScorer:
 
     def test_filter_executable(self, scorer):
         """Test filtering only executable tasks."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         candidates = [
             TaskCandidate(
@@ -420,7 +416,7 @@ class TestTaskScorer:
 
     def test_unknown_platform_defaults(self, scorer):
         """Test scoring with unknown platform uses defaults."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         # Create a candidate with a platform not in PLATFORM_DATA
         candidate = TaskCandidate(
@@ -447,7 +443,7 @@ class TestTaskResult:
     """Test TaskResult model."""
 
     def test_task_result_creation(self):
-        from src.task_scorer import TaskResult, TaskCandidate, Platform, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskResult, TaskType
 
         candidate = TaskCandidate(
             platform=Platform.CLICKWORKER,
@@ -612,7 +608,7 @@ class TestClickworkerConnector:
         page.locator.side_effect = lambda selector: FakeLocator(count=2)
 
         connector = ClickworkerConnector(Platform.CLICKWORKER, context)
-        candidates = await connector.find_tasks()
+        await connector.find_tasks()
 
         # With a generic fake DOM we get 2 cards whose sub-selectors resolve to
         # empty text — the connector filters zero-title cards, so we assert the
@@ -638,7 +634,7 @@ class TestClickworkerConnector:
     async def test_execute_task_success(self, mock_context):
         """Test successful task execution fills inputs and submits."""
         from src.task_executor import ClickworkerConnector
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         context, page = mock_context
         self._chain_page_locator(page, {
@@ -673,7 +669,7 @@ class TestClickworkerConnector:
     async def test_execute_task_failure(self, mock_context):
         """Test task execution failure on network error."""
         from src.task_executor import ClickworkerConnector
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         context, page = mock_context
         page.goto = AsyncMock(side_effect=Exception("Network error"))
@@ -700,7 +696,7 @@ class TestClickworkerConnector:
         """Test task marked not-completed when there is no submit button nor
         inputs and no success marker."""
         from src.task_executor import ClickworkerConnector
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         context, page = mock_context
         self._chain_page_locator(page, {
@@ -1029,8 +1025,8 @@ class TestTaskExecutor:
     @pytest.mark.asyncio
     async def test_get_connector_creates_and_logs_in(self, executor):
         """Test getting connector creates it and logs in."""
-        from src.task_scorer import Platform
         from src.task_executor import ClickworkerConnector
+        from src.task_scorer import Platform
 
         mock_connector = AsyncMock(spec=ClickworkerConnector)
         mock_connector.login = AsyncMock(return_value=True)
@@ -1048,8 +1044,8 @@ class TestTaskExecutor:
     @pytest.mark.asyncio
     async def test_get_connector_no_credentials(self, executor):
         """Test getting connector without credentials raises error."""
-        from src.task_scorer import Platform
         from src.task_executor import ExecutionError
+        from src.task_scorer import Platform
 
         with pytest.raises(ExecutionError, match="No credentials"):
             await executor._get_connector(Platform.CLICKWORKER)
@@ -1057,7 +1053,7 @@ class TestTaskExecutor:
     @pytest.mark.asyncio
     async def test_discover_tasks(self, executor):
         """Test discovering tasks from multiple platforms."""
-        from src.task_scorer import Platform, TaskCandidate, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         mock_connector1 = AsyncMock()
         mock_connector1.find_tasks = AsyncMock(return_value=[
@@ -1093,8 +1089,8 @@ class TestTaskExecutor:
     @pytest.mark.asyncio
     async def test_execute_task_credits_wallet(self, executor, mock_wallet):
         """Test that successful task execution credits wallet."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod, TaskResult
         from src.task_executor import ClickworkerConnector
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskResult, TaskType
 
         await executor.start()
 
@@ -1137,8 +1133,8 @@ class TestTaskExecutor:
     @pytest.mark.asyncio
     async def test_execute_task_failure_no_wallet_credit(self, executor, mock_wallet):
         """Test that failed task doesn't credit wallet."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod, TaskResult
         from src.task_executor import ClickworkerConnector
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskResult, TaskType
 
         mock_connector = AsyncMock(spec=ClickworkerConnector)
         mock_connector.execute_task = AsyncMock(return_value=TaskResult(
@@ -1178,7 +1174,7 @@ class TestTaskExecutor:
     @pytest.mark.asyncio
     async def test_execute_batch(self, executor, mock_wallet):
         """Test executing batch of tasks."""
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod, TaskResult
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskResult, TaskType
 
         mock_connector = AsyncMock()
         mock_connector.execute_task = AsyncMock(side_effect=[
@@ -1249,7 +1245,7 @@ class TestMockExecuteTask:
     async def test_mock_execute_task_success(self):
         """Test deterministic mock execution returns a valid success result."""
         from src.task_executor import mock_execute_task
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         candidate = TaskCandidate(
             platform=Platform.CLICKWORKER,
@@ -1270,7 +1266,7 @@ class TestMockExecuteTask:
     async def test_mock_execute_task_failure(self):
         """Test deterministic mock execution with an explicit failure."""
         from src.task_executor import mock_execute_task
-        from src.task_scorer import TaskCandidate, Platform, TaskType, PaymentMethod
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         candidate = TaskCandidate(
             platform=Platform.CLICKWORKER,
@@ -1298,10 +1294,11 @@ class TestTaskScorerExecutorIntegration:
     @pytest.mark.asyncio
     async def test_full_cycle_mock(self):
         """Test full discover -> score -> execute cycle with mocks."""
-        from src.task_scorer import TaskScorer, TaskCandidate, Platform, TaskType, PaymentMethod
-        from src.task_executor import mock_execute_task, TaskExecutor
-        from src.wallet import Wallet
         from decimal import Decimal
+
+        from src.task_executor import mock_execute_task
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskScorer, TaskType
+        from src.wallet import Wallet
 
         wallet = Wallet()
         scorer = TaskScorer()

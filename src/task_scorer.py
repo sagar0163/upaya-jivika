@@ -12,12 +12,11 @@ from __future__ import annotations
 from decimal import Decimal
 from enum import Enum
 from typing import Optional
-from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
 from src.guardrails import EthicalGuardrail, GuardrailVerdict, get_guardrail
-from src.state_machine import State, resolve_state, min_certainty, risk_tolerance
+from src.state_machine import State, min_certainty, resolve_state
 
 
 class Platform(str, Enum):
@@ -61,7 +60,9 @@ PLATFORM_DATA: dict[Platform, tuple[Decimal, Decimal, PaymentMethod, bool]] = {
     Platform.TOLOKA: (Decimal("0.75"), Decimal("20"), PaymentMethod.PAYONEER, True),
     Platform.CLICKWORKER: (Decimal("0.70"), Decimal("30"), PaymentMethod.PAYONEER, True),
     Platform.PROLIFIC: (Decimal("0.70"), Decimal("50"), PaymentMethod.PAYPAL, True),
-    Platform.APPEN: (Decimal("0.65"), Decimal("200"), PaymentMethod.PAYONEER, False),  # Project-based, less automation-friendly
+    Platform.APPEN: (  # Project-based, less automation-friendly
+        Decimal("0.65"), Decimal("200"), PaymentMethod.PAYONEER, False
+    ),
     Platform.DATA_ANNOTATION: (Decimal("0.65"), Decimal("30"), PaymentMethod.CRYPTO, True),
     Platform.UPWORK: (Decimal("0.55"), Decimal("50"), PaymentMethod.PAYONEER, False),  # High competition
     Platform.FIVERR: (Decimal("0.50"), Decimal("30"), PaymentMethod.PAYONEER, False),  # 20% cut, gig-based
@@ -168,7 +169,6 @@ class TaskScorer:
         """
         state = resolve_state(current_debt)
         threshold = min_certainty(current_debt)
-        risk = risk_tolerance(current_debt)
 
         reasoning = []
 
@@ -183,13 +183,10 @@ class TaskScorer:
         # 1. Base certainty from platform table
         platform_data = PLATFORM_DATA.get(candidate.platform)
         if platform_data:
-            base_certainty, typical_pay, platform_payment, automation_friendly = platform_data
+            base_certainty = platform_data[0]
             reasoning.append(f"Base platform certainty: {base_certainty} ({candidate.platform.value})")
         else:
             base_certainty = Decimal("0.5")
-            typical_pay = Decimal("0")
-            platform_payment = candidate.payment_method
-            automation_friendly = False
             reasoning.append(f"Unknown platform, using default: {base_certainty}")
 
         # 2. Platform-task affinity bonus
@@ -205,7 +202,11 @@ class TaskScorer:
         reasoning.append(f"Payment method ({candidate.payment_method.value}) bonus: +{payment_bonus}")
 
         # 4. Pay rate bonus (vs minimum threshold)
-        pay_per_hour = candidate.estimated_pay / candidate.estimated_hours if candidate.estimated_hours > 0 else Decimal("0")
+        pay_per_hour = (
+            candidate.estimated_pay / candidate.estimated_hours
+            if candidate.estimated_hours > 0
+            else Decimal("0")
+        )
         pay_rate_bonus = Decimal("0")
         if pay_per_hour >= self.min_pay_per_hour:
             # Up to 0.1 bonus for good pay
@@ -226,7 +227,7 @@ class TaskScorer:
             reasoning.append(f"Surviving state bonus: +{survival_bonus}")
         elif state == State.STRUGGLING:
             survival_bonus = Decimal("0.0")
-            reasoning.append(f"Struggling state: no bonus")
+            reasoning.append("Struggling state: no bonus")
         elif state in (State.CRITICAL, State.TERMINAL):
             survival_bonus = Decimal("0.0")
             reasoning.append(f"{state.value.upper()} state: threshold relaxed to {threshold}")

@@ -9,7 +9,6 @@ from src.soul_crystal import ReincarnationEngine
 from src.state_machine import State, SurvivalStateMachine
 from src.wallet import Wallet
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -227,6 +226,7 @@ class TestHealthEndpoint:
 
     def test_health_returns_200(self):
         from fastapi.testclient import TestClient
+
         import main as main_mod
 
         # Patch lifespan to avoid starting the real scheduler
@@ -248,6 +248,7 @@ class TestHealthEndpoint:
     def test_health_during_loop(self):
         """The production /health handler returns 200 while the loop is live."""
         from fastapi.testclient import TestClient
+
         import main as main_mod
 
         # Build a fresh app with a no-op lifespan so no scheduler is started,
@@ -328,6 +329,7 @@ class TestStatusEndpoint:
 
     def test_status_returns_200_and_keys(self):
         from fastapi.testclient import TestClient
+
         import main as main_mod
 
         @main_mod.asynccontextmanager
@@ -373,6 +375,7 @@ class TestWebSocketBroadcast:
 
     def test_websocket_receives_debt_tick(self):
         from fastapi.testclient import TestClient
+
         import main as main_mod
 
         @main_mod.asynccontextmanager
@@ -423,6 +426,7 @@ class TestDebtTickEndpoint:
 
     def test_debt_tick_endpoint_works(self):
         from fastapi.testclient import TestClient
+
         import main as main_mod
 
         @main_mod.asynccontextmanager
@@ -451,6 +455,7 @@ class TestDebtTickEndpoint:
     def test_debt_tick_deduplication(self):
         """Test that ticks within 23 hours are deduplicated."""
         from fastapi.testclient import TestClient
+
         import main as main_mod
 
         @main_mod.asynccontextmanager
@@ -486,9 +491,11 @@ class TestResearchTriggerEndpoint:
     """Test the /api/research/trigger endpoint."""
 
     def test_research_trigger_endpoint_works(self):
-        from fastapi.testclient import TestClient
-        import main as main_mod
         from unittest.mock import AsyncMock
+
+        from fastapi.testclient import TestClient
+
+        import main as main_mod
 
         @main_mod.asynccontextmanager
         async def _noop_lifespan(app):
