@@ -13,14 +13,14 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from decimal import Decimal
-from typing import Any
-
 from pathlib import Path
+from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
+from src.ancestral_memory import AncestralMemory, load_ancestral_memory
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
 from src.diary import DiaryWriter
 from src.persistence import PersistenceStore, create_persistence_store
@@ -99,6 +99,7 @@ class SurvivalLoop:
         self._life_record: LifeRecord | None = None
         self._event_log: list[str] = []
         self._running = False
+        self.ancestral_memory: AncestralMemory | None = None
 
         # Restore persisted state
         self._restore_state()
@@ -260,6 +261,16 @@ class SurvivalLoop:
         self.persistence.clear()
         for crystal in self.reincarnation.soul_crystals:
             self.persistence.save_soul_crystal(crystal)
+
+        # Load ancestral memory — compress all past soul crystals
+        # into a bounded block (never blocks a new life from starting)
+        try:
+            self.ancestral_memory = load_ancestral_memory(
+                new_life_num, self.persistence
+            )
+        except Exception:
+            logger.exception("Ancestral memory load failed")
+            self.ancestral_memory = AncestralMemory(generation=new_life_num)
 
         # Persist fresh hot state
         self._persist_all()
