@@ -133,6 +133,32 @@ class SurvivalLoop:
     def _restore_state(self) -> None:
         """Restore hot-memory state from persistence on startup."""
         debt_state = self.persistence.load_debt_state()
+        wallet_data = self.persistence.load_wallet()
+        life_record = self.persistence.load_life_record()
+
+        # The core hot-memory entities (debt_state, wallet, life_record) are
+        # written together as a coherent unit by _persist_all. If only *some*
+        # of them survived (e.g. a write failed partway, or the process died
+        # between saves), resuming would resurrect the agent in a torn state —
+        # alive with no wallet. Treat a partial set as corrupt and start fresh
+        # rather than restoring an inconsistent half-snapshot.
+        present = {
+            "debt_state": debt_state is not None,
+            "wallet": wallet_data is not None,
+            "life_record": life_record is not None,
+        }
+        if any(present.values()) and not all(present.values()):
+            logger.warning(
+                "Inconsistent persisted snapshot (%s) — treating as partial "
+                "write and starting a fresh life",
+                present,
+            )
+            # Load the permanent archive first so the fresh life inherits the
+            # correct next life number and ancestral memory.
+            self.reincarnation.soul_crystals = self.persistence.load_soul_crystals()
+            self._start_fresh_life()
+            return
+
         if debt_state:
             self.debt_engine.restore(debt_state)
             logger.info(
@@ -142,7 +168,6 @@ class SurvivalLoop:
                 debt_state.alive,
             )
 
-        wallet_data = self.persistence.load_wallet()
         if wallet_data:
             self.wallet = Wallet(
                 locked=Decimal(wallet_data["locked"]),
@@ -151,7 +176,6 @@ class SurvivalLoop:
             )
             logger.info("Restored wallet: $%s total", self.wallet.total_balance)
 
-        life_record = self.persistence.load_life_record()
         if life_record:
             self._life_record = life_record
             logger.info("Restored life record: life %d", life_record.life_number)
@@ -164,11 +188,19 @@ class SurvivalLoop:
 
         # If no life record exists yet, start life 1
         if self._life_record is None:
-            life_num = self.reincarnation.next_life_number()
-            self._life_record = self.reincarnation.start_new_life(life_num)
-            self._persist_all()
-            self.cold_archive.begin_life(life_num)
-            logger.info("Started new life: %d", life_num)
+            self._start_fresh_life()
+
+    def _start_fresh_life(self) -> None:
+        """Begin life 1 (or the next life) with clean hot-memory state."""
+        life_num = self.reincarnation.next_life_number()
+        self.debt_engine.reset_for_new_life(life_num)
+        self.state_machine.reset()
+        self.wallet = Wallet()
+        self._life_record = self.reincarnation.start_new_life(life_num)
+        self._event_log = [f"Life {life_num} born"]
+        self._persist_all()
+        self.cold_archive.begin_life(life_num)
+        logger.info("Started new life: %d", life_num)
 
     def _persist_all(self) -> None:
         """Persist all hot-memory state."""

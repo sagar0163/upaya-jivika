@@ -375,6 +375,96 @@ class TestPersistenceFallback:
         assert loop2.debt_engine.debt == Decimal("1.50")
         assert loop2.wallet.debt == Decimal("1.50")
 
+    def test_partial_snapshot_missing_wallet_starts_fresh(self):
+        """A torn snapshot (debt+life present, wallet missing) must not resume.
+
+        Resuming the half-written snapshot would resurrect the agent alive with
+        no wallet. The loop must instead fall back to a fresh life.
+        """
+        from datetime import datetime, timezone
+
+        from main import SurvivalLoop
+        from src.debt_engine import DebtState, DifficultyMode
+        from src.soul_crystal import LifeRecord
+
+        store = InMemoryStore()
+        store.save_debt_state(
+            DebtState(
+                debt=Decimal("6.00"),
+                mode=DifficultyMode.NORMAL,
+                alive=True,
+                life_number=2,
+            )
+        )
+        store.save_life_record(
+            LifeRecord(life_number=2, born_at=datetime.now(timezone.utc))
+        )
+        # wallet deliberately absent — simulates a partial write
+
+        loop = SurvivalLoop(persistence=store)
+
+        # Must NOT have resumed the torn $6.00 alive snapshot.
+        assert loop.debt_engine.debt == Decimal("0.00")
+        assert loop.wallet.total_balance == Decimal("0.00")
+        assert loop._life_record is not None
+
+    def test_partial_snapshot_missing_debt_state_starts_fresh(self):
+        """A torn snapshot (wallet+life present, debt_state missing) must not resume."""
+        from datetime import datetime, timezone
+
+        from main import SurvivalLoop
+        from src.soul_crystal import LifeRecord
+
+        store = InMemoryStore()
+        store.save_wallet(Wallet(locked=Decimal("9.00"), free=Decimal("9.00")))
+        store.save_life_record(
+            LifeRecord(life_number=5, born_at=datetime.now(timezone.utc))
+        )
+        # debt_state deliberately absent
+
+        loop = SurvivalLoop(persistence=store)
+
+        assert loop.wallet.total_balance == Decimal("0.00")
+        assert loop.debt_engine.debt == Decimal("0.00")
+        assert loop._life_record.life_number == 1
+
+    def test_partial_snapshot_inherits_next_life_from_archive(self):
+        """A torn snapshot still starts at the next life per the permanent archive."""
+        from datetime import datetime, timezone
+
+        from main import SurvivalLoop
+        from src.debt_engine import DebtState, DifficultyMode
+        from src.soul_crystal import LifeRecord, SoulCrystal
+
+        store = InMemoryStore()
+        store.save_debt_state(
+            DebtState(
+                debt=Decimal("3.00"),
+                mode=DifficultyMode.NORMAL,
+                alive=True,
+                life_number=2,
+            )
+        )
+        store.save_life_record(
+            LifeRecord(life_number=2, born_at=datetime.now(timezone.utc))
+        )
+        # Permanent archive survives — life 1 already crystalised
+        store.save_soul_crystal(
+            SoulCrystal(
+                life=1,
+                born=datetime(2026, 9, 1, tzinfo=timezone.utc),
+                died=datetime(2026, 9, 21, tzinfo=timezone.utc),
+                lifespan_days=20.0,
+            )
+        )
+        # wallet deliberately absent
+
+        loop = SurvivalLoop(persistence=store)
+
+        # Fresh life number derives from the archive: max(1) + 1 = 2
+        assert loop.debt_engine.snapshot().life_number == 2
+        assert loop.wallet.total_balance == Decimal("0.00")
+
 # ---------------------------------------------------------------------------
 # Status endpoint
 # ---------------------------------------------------------------------------
