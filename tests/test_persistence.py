@@ -54,6 +54,66 @@ class TestWalletSerialization:
         assert restored.debt == Decimal("2.00")
 
 
+class TestWalletSerialisationRobustness:
+    """Document that _wallet_from_dict has no optional fields — all required."""
+
+    def test_missing_required_field_raises_keyerror(self):
+        d = {
+            "locked": "10.00",
+            "free": "5.50",
+            # missing debt
+        }
+        with pytest.raises(KeyError):
+            _wallet_from_dict(d, Wallet)
+
+    def test_all_fields_required(self):
+        """Verify every field is required — removing any one should raise."""
+        full = {
+            "locked": "10.00",
+            "free": "5.50",
+            "debt": "2.00",
+        }
+        for key in list(full.keys()):
+            partial = {k: v for k, v in full.items() if k != key}
+            with pytest.raises(KeyError):
+                _wallet_from_dict(partial, Wallet)
+
+    def test_extra_fields_ignored(self):
+        d = {
+            "locked": "10.00",
+            "free": "5.50",
+            "debt": "2.00",
+            "future_field": "ignored",
+            "nested": {"a": [1]},
+        }
+        restored = _wallet_from_dict(d, Wallet)
+        assert restored.locked == Decimal("10.00")
+        assert restored.free == Decimal("5.50")
+        assert restored.debt == Decimal("2.00")
+
+    def test_zero_balances_roundtrip(self):
+        d = {"locked": "0.00", "free": "0.00", "debt": "0.00"}
+        restored = _wallet_from_dict(d, Wallet)
+        assert restored.locked == Decimal("0.00")
+        assert restored.free == Decimal("0.00")
+        assert restored.debt == Decimal("0.00")
+
+    def test_debt_only_survives(self):
+        d = {"locked": "0.00", "free": "0.00", "debt": "7.50"}
+        restored = _wallet_from_dict(d, Wallet)
+        assert restored.debt == Decimal("7.50")
+        assert restored.locked == Decimal("0.00")
+        assert restored.free == Decimal("0.00")
+
+    def test_string_values_parsed_to_decimal(self):
+        restored = _wallet_from_dict(
+            {"locked": "10", "free": "5.5", "debt": "2"}, Wallet
+        )
+        assert restored.locked == Decimal(10)
+        assert restored.free == Decimal("5.5")
+        assert restored.debt == Decimal(2)
+
+
 class TestLifeRecordSerialization:
     def test_roundtrip(self):
         rec = LifeRecord(
