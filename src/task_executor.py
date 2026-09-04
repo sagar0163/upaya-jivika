@@ -24,10 +24,15 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+from dataclasses import dataclass, field
+
+if TYPE_CHECKING:
+    from src.guardrails import EthicalGuardrail
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
+from src.guardrails import get_guardrail
 from src.task_scorer import (
     TaskCandidate,
     TaskResult,
@@ -756,10 +761,13 @@ class TaskExecutor:
         max_concurrent_tasks: int = 1,
         session_dir: Optional[str] = None,
         vault: Optional[CredentialsVault] = None,
+        guardrail: EthicalGuardrail | None = None,
     ) -> None:
         self.wallet = wallet
         self.headless = headless
         self.max_concurrent_tasks = max_concurrent_tasks
+        # Hard blacklist double-check runs immediately before execution.
+        self.guardrail = guardrail or get_guardrail()
         self.session_manager = BrowserSessionManager(
             headless=headless, storage_dir=session_dir
         )
@@ -868,6 +876,25 @@ class TaskExecutor:
         """
         if not self._running:
             raise ExecutionError("Executor not started")
+
+        # Hard blacklist double-check immediately before execution. Even if a
+        # blacklisted task slipped through scoring, it is blocked here.
+        verdict = self.guardrail.evaluate(candidate)
+        if not verdict.allowed:
+            logger.warning(
+                "Refusing to execute task %r (%s): %s",
+                candidate.title,
+                candidate.platform.value,
+                verdict.reason,
+            )
+            return TaskResult(
+                task_id=str(uuid.uuid4())[:8],
+                candidate=candidate,
+                success=False,
+                amount_earned=Decimal("0"),
+                error=f"BLOCKED by ethical guardrail: {verdict.reason}",
+                platform_data={"guardrail": verdict.model_dump()},
+            )
 
         connector = await self._get_connector(candidate.platform)
 

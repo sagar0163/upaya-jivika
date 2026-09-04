@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
+from src.guardrails import EthicalGuardrail, GuardrailVerdict, get_guardrail
 from src.state_machine import State, resolve_state, min_certainty, risk_tolerance
 
 
@@ -122,6 +123,7 @@ class TaskScore(BaseModel):
     passes_threshold: bool
     threshold_used: Decimal
     survival_state: State
+    guardrail: GuardrailVerdict = GuardrailVerdict(allowed=True)
     reasoning: list[str] = Field(default_factory=list)
 
 
@@ -143,9 +145,12 @@ class TaskScorer:
         self,
         base_threshold: Decimal = Decimal("0.85"),
         min_pay_per_hour: Decimal = Decimal("1.00"),
+        guardrail: EthicalGuardrail | None = None,
     ) -> None:
         self.base_threshold = base_threshold
         self.min_pay_per_hour = min_pay_per_hour
+        # Hard blacklist is absolute: never disabled by temperature/state.
+        self.guardrail = guardrail or get_guardrail()
 
     def score(
         self,
@@ -166,6 +171,14 @@ class TaskScorer:
         risk = risk_tolerance(current_debt)
 
         reasoning = []
+
+        # 0. Ethical guardrail — absolute hard blacklist (artifact.md §6).
+        # Enforced BEFORE any scoring: a blacklisted task is rejected even in
+        # Critical/Terminal states where the certainty threshold is relaxed.
+        verdict = self.guardrail.evaluate(candidate)
+        reasoning.append(
+            f"Guardrail: {'ALLOW' if verdict.allowed else 'REJECT (' + verdict.reason + ')'}"
+        )
 
         # 1. Base certainty from platform table
         platform_data = PLATFORM_DATA.get(candidate.platform)
@@ -240,9 +253,16 @@ class TaskScorer:
         # Cap at 1.0
         final_score = min(final_score, Decimal("1.0"))
 
-        passes = final_score >= threshold
+        # The guardrail overrides everything: blacklisted tasks never pass,
+        # regardless of how high they score or how relaxed the state is.
+        passes = final_score >= threshold and verdict.allowed
 
-        if not passes:
+        if not verdict.allowed:
+            reasoning.append(
+                f"BLOCKED by ethical guardrail: {verdict.reason} "
+                f"(final score {final_score} irrelevant)"
+            )
+        elif not passes:
             reasoning.append(f"FAIL: {final_score} < {threshold} (state={state.value})")
         else:
             reasoning.append(f"PASS: {final_score} >= {threshold} (state={state.value})")
@@ -258,6 +278,7 @@ class TaskScorer:
             passes_threshold=passes,
             threshold_used=threshold,
             survival_state=state,
+            guardrail=verdict,
             reasoning=reasoning,
         )
 
