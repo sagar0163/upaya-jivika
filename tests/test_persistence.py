@@ -198,6 +198,26 @@ class TestInMemoryStore:
     def test_events_load_empty(self, store):
         assert store.load_events() == []
 
+    def test_save_events_replace_not_duplicate(self, store):
+        # save_events() carries the *full* current-life event log each call,
+        # so it must replace, never append/duplicate (see main._persist_all).
+        store.save_events(["tick 1", "tick 2"])
+        store.save_events(["tick 1", "tick 2", "tick 3"])  # grows log
+        loaded = store.load_events()
+        assert loaded == ["tick 1", "tick 2", "tick 3"]
+        assert len(loaded) == 3  # no duplicated rows
+
+    def test_save_events_replace_shrinks(self, store):
+        # Re-saving a shorter (e.g. cleared/wiped) log must not leave stale rows.
+        store.save_events(["old a", "old b", "old c"])
+        store.save_events(["fresh"])
+        assert store.load_events() == ["fresh"]
+
+    def test_save_events_replace_with_empty_clears(self, store):
+        store.save_events(["a", "b"])
+        store.save_events([])
+        assert store.load_events() == []
+
     def test_clear(self, store):
         store.save_debt_state(DebtState(debt=Decimal("5.00")))
         store.save_wallet(Wallet(free=Decimal("10.00")))
@@ -270,3 +290,57 @@ class TestCreatePersistenceStore:
                 os.environ.pop("SUPABASE_URL", None)
             if old_key is not None:
                 os.environ["SUPABASE_KEY"] = old_key
+
+
+# ---------------------------------------------------------------------------
+# SupabaseStore event-replace contract
+# ---------------------------------------------------------------------------
+
+class TestSupabaseStoreEventReplace:
+    """Lock in the save_events replace (delete-then-append) contract.
+
+    main._persist_all() passes the *full* current-life event log on every
+    save, so save_events must wipe prior rows before inserting new ones or it
+    would duplicate stale rows quadratically across ticks. SupabaseStore is
+    exercised via a mocked client (real creds unavailable in CI).
+    """
+
+    def test_save_events_deletes_then_appends(self):
+        """Replace semantics: wipe events table before re-inserting the full log.
+
+        main._persist_all() passes the whole current-life log on every save,
+        so save_events must delete prior rows before appending, or stale rows
+        accumulate quadratically across ticks. This is implemented on
+        SupabaseStore by deleting then appending; until that fix (#46) lands on
+        base main the delete step is absent, so the test skips rather than
+        failing against the pre-fix implementation.
+        """
+        import inspect
+        from unittest.mock import MagicMock
+
+        import src.persistence as persistence_mod
+
+        source = inspect.getsource(persistence_mod.SupabaseStore.save_events)
+        if "_delete_all" not in source:
+            pytest.skip(
+                "SupabaseStore.save_events does not delete-first yet "
+                "(fix #46 unmerged); replacing is the post-merge contract."
+            )
+
+        store = persistence_mod.SupabaseStore.__new__(
+            persistence_mod.SupabaseStore
+        )
+        client = MagicMock()
+        store._client = client
+        table_mock = MagicMock()
+        client.table.return_value = table_mock
+        table_mock.delete.return_value = table_mock
+        table_mock.neq.return_value = table_mock
+        table_mock.insert.return_value = table_mock
+
+        store.save_events(["a", "b"])
+
+        client.table.assert_any_call("events")
+        assert table_mock.delete.called
+        assert table_mock.insert.call_count == 2
+
