@@ -163,6 +163,19 @@ class PersistenceStore(ABC):
     def clear(self) -> None:
         """Reset hot-memory state while preserving the soul-crystal archive."""
 
+    @abstractmethod
+    def is_payment_processed(self, payment_id: str) -> bool:
+        """Return True if this Payoneer payment_id has already been credited.
+
+        Processed-payment records are permanent (§20 payment audit trail) and
+        must survive :meth:`clear` / reincarnation — a payout received in a
+        past life must never be double-credited or re-processed after death.
+        """
+
+    @abstractmethod
+    def mark_payment_processed(self, payment_id: str, data: dict[str, Any]) -> None:
+        """Record a Payoneer payment_id as processed, with its raw event data."""
+
 
 # ---------------------------------------------------------------------------
 # In-memory fallback
@@ -177,6 +190,7 @@ class InMemoryStore(PersistenceStore):
         self._life_record: dict[str, Any] | None = None
         self._soul_crystals: list[dict[str, Any]] = []
         self._events: list[str] = []
+        self._processed_payments: dict[str, dict[str, Any]] = {}
 
     def save_debt_state(self, state: DebtState) -> None:
         self._debt_state = _debt_state_to_dict(state)
@@ -216,10 +230,18 @@ class InMemoryStore(PersistenceStore):
         # Preserve the permanent soul-crystal archive (§10 Layer 2/3): it must
         # survive reincarnation. Only wipe the hot-memory state (wallet, task
         # queue, events, life record) that belongs to the dying life.
+        # processed_payments is also permanent (§20) and is intentionally not
+        # cleared here.
         self._debt_state = None
         self._wallet = None
         self._life_record = None
         self._events.clear()
+
+    def is_payment_processed(self, payment_id: str) -> bool:
+        return payment_id in self._processed_payments
+
+    def mark_payment_processed(self, payment_id: str, data: dict[str, Any]) -> None:
+        self._processed_payments[payment_id] = dict(data)
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +297,11 @@ class SupabaseStore(PersistenceStore):
         );
         CREATE TABLE IF NOT EXISTS soul_crystals (
             id    BIGSERIAL PRIMARY KEY,
+            data  JSONB NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS processed_payments (
+            id    TEXT PRIMARY KEY,
             data  JSONB NOT NULL,
             created_at TIMESTAMPTZ DEFAULT now()
         );
@@ -372,6 +399,14 @@ class SupabaseStore(PersistenceStore):
         for table in self._ROW_TABLES:
             self._delete_all(table)
         self._delete_all("events")
+
+    # -- processed_payments (§20 payment audit trail — permanent) -----------
+
+    def is_payment_processed(self, payment_id: str) -> bool:
+        return self._load_row("processed_payments", payment_id) is not None
+
+    def mark_payment_processed(self, payment_id: str, data: dict[str, Any]) -> None:
+        self._upsert_row("processed_payments", payment_id, data)
 
 
 # ---------------------------------------------------------------------------

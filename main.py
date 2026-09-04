@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from src.alert_system import AlertSystem
@@ -26,6 +27,13 @@ from src.ancestral_memory import AncestralMemory, load_ancestral_memory
 from src.cold_archive import ColdArchive
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
 from src.diary import DiaryWriter
+from src.payoneer_webhook import (
+    SIGNATURE_HEADER,
+    PayoneerWebhookError,
+    PayoneerWebhookEvent,
+    parse_webhook_payload,
+    verify_signature,
+)
 from src.persistence import PersistenceStore, create_persistence_store
 from src.research_loop import ResearchAgent
 from src.respawn_policy import RespawnPolicyEngine
@@ -431,6 +439,86 @@ class SurvivalLoop:
             time_spent_hours=time_spent_hours,
         )
 
+    # -- payments (§20 payment confirmation) ---------------------------------
+
+    def record_payment(self, event: PayoneerWebhookEvent) -> dict[str, Any]:
+        """Process a verified, parsed Payoneer payment event.
+
+        Idempotent by ``payment_id`` — a redelivered webhook (Payoneer retries
+        on non-2xx, and a load balancer can duplicate delivery) never credits
+        the wallet twice. Only a :attr:`PaymentStatus.COMPLETED` event credits
+        the wallet; ``pending``/``failed``/``unknown`` events are recorded for
+        the audit trail but do not move money.
+        """
+        if self.persistence.is_payment_processed(event.payment_id):
+            logger.info("Payoneer payment %s already processed — skipping", event.payment_id)
+            return {"processed": False, "reason": "duplicate", "payment_id": event.payment_id}
+
+        if not event.is_completed:
+            logger.info(
+                "Payoneer payment %s has status=%s — not crediting yet",
+                event.payment_id,
+                event.status.value,
+            )
+            self.cold_archive.append_event(
+                "payment_status",
+                {"payment_id": event.payment_id, "status": event.status.value, "amount": str(event.amount)},
+            )
+            return {"processed": False, "reason": f"status={event.status.value}", "payment_id": event.payment_id}
+
+        breakdown = self.wallet.credit_earned(event.amount)
+        self.persistence.mark_payment_processed(
+            event.payment_id,
+            {
+                "amount": str(event.amount),
+                "currency": event.currency,
+                "status": event.status.value,
+                "debt_repaid": str(breakdown["debt_repaid"]),
+                "to_free": str(breakdown["to_free"]),
+            },
+        )
+        self._event_log.append(
+            f"Payment confirmed: {event.payment_id} ${event.amount} "
+            f"(debt_repaid=${breakdown['debt_repaid']}, to_free=${breakdown['to_free']})"
+        )
+        self.cold_archive.append_event(
+            "payment_confirmed",
+            {
+                "payment_id": event.payment_id,
+                "amount": str(event.amount),
+                "currency": event.currency,
+                "debt_repaid": str(breakdown["debt_repaid"]),
+                "to_free": str(breakdown["to_free"]),
+            },
+        )
+        self._persist_all()
+        self._broadcast_event("payment_confirmed")
+        logger.info(
+            "Payoneer payment %s confirmed: $%s credited (debt_repaid=$%s, to_free=$%s)",
+            event.payment_id,
+            event.amount,
+            breakdown["debt_repaid"],
+            breakdown["to_free"],
+        )
+
+        try:
+            self.diary.on_tick(
+                life_number=self.debt_engine.state.life_number,
+                debt=self.debt_engine.debt,
+                state=self.state_machine.state.value,
+                events=list(self._event_log),
+            )
+        except Exception:
+            logger.exception("Diary write failed on payment confirmation")
+
+        return {
+            "processed": True,
+            "payment_id": event.payment_id,
+            "amount": str(event.amount),
+            "debt_repaid": str(breakdown["debt_repaid"]),
+            "to_free": str(breakdown["to_free"]),
+        }
+
     # -- lifecycle ----------------------------------------------------------
 
     def start(self) -> None:
@@ -632,3 +720,42 @@ async def research_trigger_endpoint():
         "status": "completed",
         "topics_researched": len(loop.research.get_history()),
     }
+
+
+@app.post("/api/webhooks/payoneer")
+async def payoneer_webhook(request: Request):
+    """Receive a Payoneer payment notification (artifact.md §20).
+
+    Verifies the ``X-Payoneer-Signature`` header (HMAC-SHA256 over the raw
+    body, keyed by ``PAYONEER_WEBHOOK_SECRET``) before touching anything, so
+    an attacker who knows this URL cannot fabricate payments. Fails closed:
+    if the secret isn't configured, every request is rejected rather than
+    silently accepted.
+    """
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+
+    secret = os.environ.get("PAYONEER_WEBHOOK_SECRET")
+    if not secret:
+        logger.error("Payoneer webhook received but PAYONEER_WEBHOOK_SECRET is not set")
+        raise HTTPException(status_code=503, detail="Webhook not configured")
+
+    raw_body = await request.body()
+    signature = request.headers.get(SIGNATURE_HEADER, "")
+    if not verify_signature(secret, raw_body, signature):
+        logger.warning("Payoneer webhook signature verification failed")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Malformed JSON body") from exc
+
+    try:
+        event = parse_webhook_payload(payload)
+    except PayoneerWebhookError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    result = loop.record_payment(event)
+    return result

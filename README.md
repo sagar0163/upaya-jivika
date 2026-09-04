@@ -1,7 +1,7 @@
 <!-- AUTO-GENERATED from artifact.md by scripts/generate-readme.sh. Do not edit directly. -->
 
 # Survival AI — Project Spec
-> Version 0.8 · Last updated 2026-09-04  
+> Version 0.9 · Last updated 2026-09-05  
 > Single source of truth. Update this file, not chat.
 
 ---
@@ -380,7 +380,7 @@ Frameworks spend 30–40% of dev time on abstraction overhead. Our custom mechan
 | Library | Purpose |
 |---|---|
 | `httpx` | Async API calls to all AI providers + Jina Reader |
-| `fastapi` | `/health`, `/status`, `/api/debt/tick`, `/api/research/trigger` (Payoneer webhook endpoint planned, not yet built) |
+| `fastapi` | `/health`, `/status`, `/api/debt/tick`, `/api/research/trigger`, `/api/webhooks/payoneer` |
 | `supabase-py` | All database ops |
 | `playwright` | Browser automation for earning platforms |
 | `duckduckgo-search` | Web search, no key needed |
@@ -432,7 +432,7 @@ dashboard.py         — Rich terminal UI, live status
 
 | Priority | Gap | Status |
 |---|---|---|
-| 🔴 | Payment confirmation | **NOT BUILT** — no webhook endpoint exists in `main.py`; Payoneer receipt still requires manual entry |
+| ✅ | Payment confirmation | **SOLVED** — `POST /api/webhooks/payoneer` in `main.py` (`src/payoneer_webhook.py`) verifies an HMAC-SHA256 signature, credits the wallet idempotently by `payment_id`, repays debt first. Payload field names are defensive/best-effort since Payoneer's exact webhook schema isn't public — narrow once real payloads are observed. |
 | ✅ | CI pipeline | **SOLVED** — `ci.yml` now runs `ruff` + `pytest` (was a Node no-op); flaky WS test fixed |
 | 🔴 | Email inbox | Needed for platform verifications + payment alerts |
 | 🟡 | CAPTCHA handling | Strategy designed (§19: nodriver/Camoufox/playwright-stealth/playwright-captcha) — not yet built |
@@ -453,7 +453,7 @@ dashboard.py         — Rich terminal UI, live status
 |---|---|---|
 | Platform ToS violation | 🔴 HIGH | Human-paced Playwright · research ToS before joining any platform |
 | CAPTCHA blocking earning | 🟡 MEDIUM | Try ToS-safe platforms first · Clickworker/Toloka less aggressive · layered bypass strategy designed in §19, not yet built |
-| Payment not confirming | 🔴 UNSOLVED | No Payoneer webhook exists yet — payment confirmation is still manual |
+| Payment not confirming | ✅ SOLVED | `/api/webhooks/payoneer` credits the wallet automatically on a signed `completed` event, idempotent by `payment_id` |
 | Render sleep kills debt clock | 🟡 MEDIUM | Debt state persisted in Supabase — survives sleep |
 | NVIDIA rate limit changes | 🟡 MEDIUM | Full fallback chain: Groq → Gemini → Mistral → OpenRouter |
 | User drains free pool | 🟢 LOW | By design — creates survival tension, user's choice |
@@ -516,7 +516,7 @@ survival-ai/
 │   ├── ancestral_memory.py
 │   └── respawn_policy.py
 ├── api/
-│   └── main.py          ← FastAPI: /health, /status, /api/* endpoints (Payoneer webhook not yet built)
+│   └── main.py          ← FastAPI: /health, /status, /api/* endpoints, /api/webhooks/payoneer
 ├── tests/
 ├── SPEC.md
 ├── requirements.txt
@@ -622,7 +622,7 @@ Each phase after ships into this live system:
 | Economic game theory | Existence debt · locked vs free pool tension · user/AI competing interests |
 | Browser automation | Playwright sessions on live earning platforms |
 | Data engineering | 3-layer memory architecture (Supabase / GitHub / HuggingFace) |
-| API integration | FastAPI · Supabase · GitHub API · HuggingFace Hub (Payoneer webhook planned, not yet built) |
+| API integration | FastAPI · Supabase · GitHub API · HuggingFace Hub · Payoneer webhook (HMAC-verified) |
 | DevOps | GitHub Actions CI/CD · Render auto-deploy · cron-based distributed scheduling |
 | Continual learning | Soul Crystal distillation · Ancestral Memory compression across lives |
 | Cost optimisation | $0 infrastructure using rate-limited (not credit-based) free tiers |
