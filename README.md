@@ -377,7 +377,7 @@ Frameworks spend 30–40% of dev time on abstraction overhead. Our custom mechan
 | Library | Purpose |
 |---|---|
 | `httpx` | Async API calls to all AI providers + Jina Reader |
-| `fastapi` | Payoneer webhook endpoint |
+| `fastapi` | `/health`, `/status`, `/api/debt/tick`, `/api/research/trigger` (Payoneer webhook endpoint planned, not yet built) |
 | `supabase-py` | All database ops |
 | `playwright` | Browser automation for earning platforms |
 | `duckduckgo-search` | Web search, no key needed |
@@ -429,7 +429,7 @@ dashboard.py         — Rich terminal UI, live status
 
 | Priority | Gap | Status |
 |---|---|---|
-| ✅ | Payment confirmation | **SOLVED** — Payoneer webhook → Supabase update |
+| 🔴 | Payment confirmation | **NOT BUILT** — no webhook endpoint exists in `main.py`; Payoneer receipt still requires manual entry |
 | ✅ | CI pipeline | **SOLVED** — `ci.yml` now runs `ruff` + `pytest` (was a Node no-op); flaky WS test fixed |
 | 🔴 | Email inbox | Needed for platform verifications + payment alerts |
 | 🔴 | CAPTCHA handling | Fiverr/Upwork bot detection — no bypass strategy |
@@ -449,7 +449,7 @@ dashboard.py         — Rich terminal UI, live status
 |---|---|---|
 | Platform ToS violation | 🔴 HIGH | Human-paced Playwright · research ToS before joining any platform |
 | CAPTCHA blocking earning | 🔴 HIGH | Try ToS-safe platforms first · Clickworker/Toloka less aggressive |
-| Payment not confirming | ✅ SOLVED | Payoneer webhook fires on real payment arrival |
+| Payment not confirming | 🔴 UNSOLVED | No Payoneer webhook exists yet — payment confirmation is still manual |
 | Render sleep kills debt clock | 🟡 MEDIUM | Debt state persisted in Supabase — survives sleep |
 | NVIDIA rate limit changes | 🟡 MEDIUM | Full fallback chain: Groq → Gemini → Mistral → OpenRouter |
 | User drains free pool | 🟢 LOW | By design — creates survival tension, user's choice |
@@ -512,7 +512,7 @@ survival-ai/
 │   ├── ancestral_memory.py
 │   └── respawn_policy.py
 ├── api/
-│   └── main.py          ← FastAPI: Payoneer webhook + /api/* endpoints
+│   └── main.py          ← FastAPI: /health, /status, /api/* endpoints (Payoneer webhook not yet built)
 ├── tests/
 ├── SPEC.md
 ├── requirements.txt
@@ -618,7 +618,7 @@ Each phase after ships into this live system:
 | Economic game theory | Existence debt · locked vs free pool tension · user/AI competing interests |
 | Browser automation | Playwright sessions on live earning platforms |
 | Data engineering | 3-layer memory architecture (Supabase / GitHub / HuggingFace) |
-| API integration | FastAPI webhook · Payoneer · Supabase · GitHub API · HuggingFace Hub |
+| API integration | FastAPI · Supabase · GitHub API · HuggingFace Hub (Payoneer webhook planned, not yet built) |
 | DevOps | GitHub Actions CI/CD · Render auto-deploy · cron-based distributed scheduling |
 | Continual learning | Soul Crystal distillation · Ancestral Memory compression across lives |
 | Cost optimisation | $0 infrastructure using rate-limited (not credit-based) free tiers |
