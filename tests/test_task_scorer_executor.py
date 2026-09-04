@@ -1172,6 +1172,55 @@ class TestTaskExecutor:
         mock_wallet.credit_earned.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_execute_task_times_out(self, executor, mock_wallet):
+        """Test that a task exceeding the duration cap is aborted and fails.
+
+        artifact.md §14 "Task timeout" — a stuck task must not run indefinitely
+        while debt keeps ticking, so the executor reports failure with $0.
+        """
+        import asyncio
+
+        from src.task_executor import ClickworkerConnector
+        from src.task_scorer import TaskCandidate
+
+        async def _stuck_execute_task(candidate):
+            await asyncio.sleep(30)  # far longer than any sane cap
+
+        mock_connector = AsyncMock(spec=ClickworkerConnector)
+        mock_connector.execute_task = AsyncMock(side_effect=_stuck_execute_task)
+
+        executor._connectors[Platform.CLICKWORKER] = mock_connector
+        executor.task_timeout_seconds = 0.05  # tiny cap to force a timeout quickly
+
+        candidate = TaskCandidate(
+            platform=Platform.CLICKWORKER,
+            task_type=TaskType.MICROTASK,
+            title="Stuck task",
+            estimated_pay=Decimal("10.00"),
+            estimated_hours=Decimal("1.0"),
+            payment_method=PaymentMethod.PAYONEER,
+        )
+
+        await executor.start()
+        result = await executor.execute_task(candidate)
+        await executor.stop()
+
+        assert result.success is False
+        assert result.amount_earned == Decimal("0")
+        assert result.error is not None
+        assert "timed out" in result.error
+        assert result.platform_data.get("timed_out") is True
+        mock_wallet.credit_earned.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_execute_task_respects_default_timeout(self, executor, mock_wallet):
+        """Test that the default task timeout is applied when not overridden."""
+        from src.task_executor import DEFAULT_TASK_TIMEOUT_SECONDS
+
+        assert executor.task_timeout_seconds == DEFAULT_TASK_TIMEOUT_SECONDS
+        assert executor.task_timeout_seconds > 0
+
+    @pytest.mark.asyncio
     async def test_execute_batch(self, executor, mock_wallet):
         """Test executing batch of tasks."""
         from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskResult, TaskType

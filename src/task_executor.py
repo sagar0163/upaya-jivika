@@ -46,9 +46,19 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_SESSION_DIR = ".uj_sessions"
 
+# artifact.md §14: "Task timeout — Max duration cap while debt keeps ticking".
+# Default cap: a task may run at most this long before we abort it and report
+# failure. Debt keeps accruing meanwhile, so an unbounded task is a slow leak.
+DEFAULT_TASK_TIMEOUT_SECONDS = 300
+
 
 class ExecutionError(Exception):
     """Raised when task execution fails."""
+    pass
+
+
+class TaskTimeoutError(ExecutionError):
+    """Raised when a task exceeds its maximum allowed duration."""
     pass
 
 
@@ -761,12 +771,14 @@ class TaskExecutor:
         session_dir: Optional[str] = None,
         vault: Optional[CredentialsVault] = None,
         guardrail: EthicalGuardrail | None = None,
+        task_timeout_seconds: float = DEFAULT_TASK_TIMEOUT_SECONDS,
     ) -> None:
         self.wallet = wallet
         self.headless = headless
         self.max_concurrent_tasks = max_concurrent_tasks
         # Hard blacklist double-check runs immediately before execution.
         self.guardrail = guardrail or get_guardrail()
+        self.task_timeout_seconds = task_timeout_seconds
         self.session_manager = BrowserSessionManager(
             headless=headless, storage_dir=session_dir
         )
@@ -866,6 +878,10 @@ class TaskExecutor:
     ) -> TaskResult:
         """Execute a single task and credit earnings to wallet.
 
+        Enforces ``self.task_timeout_seconds`` — a hard cap on task duration so
+        a stuck task can't run indefinitely while debt keeps ticking (artifact.md
+        §14 "Task timeout"). On timeout the task is reported as failed with $0.
+
         Args:
             candidate: The task to execute.
             certainty: ROI certainty for wallet spend gate (default 95%).
@@ -897,8 +913,26 @@ class TaskExecutor:
 
         connector = await self._get_connector(candidate.platform)
 
-        # Execute the task
-        result = await connector.execute_task(candidate)
+        # Execute the task, capped to prevent unbounded runtime while debt accrues
+        try:
+            result = await asyncio.wait_for(
+                connector.execute_task(candidate),
+                timeout=self.task_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Task {candidate.title!r} exceeded {self.task_timeout_seconds}s cap; "
+                "aborting and reporting failure"
+            )
+            result = TaskResult(
+                task_id=str(uuid.uuid4())[:8],
+                candidate=candidate,
+                success=False,
+                amount_earned=Decimal("0"),
+                time_spent_hours=Decimal("0"),
+                error=f"Task timed out after {self.task_timeout_seconds}s",
+                platform_data={"platform": candidate.platform.value, "timed_out": True},
+            )
 
         # If successful, credit earnings to wallet free pool
         if result.success and result.amount_earned > 0:
