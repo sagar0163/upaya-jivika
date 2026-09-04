@@ -218,6 +218,59 @@ class TestFullLifeDeathReincarnation:
         assert "Life 2" in mem
         assert "2 lives" in mem
 
+    def test_persistence_keeps_crystal_and_prunes_events_after_reincarnation(self):
+        """After death → reincarnation, hot-memory state resets while the
+        permanent soul-crystal archive and the per-life event log are both
+        correct in persistence (no cross-life bleed, no lost crystals).
+        """
+        from main import SurvivalLoop
+
+        store = InMemoryStore()
+        loop = SurvivalLoop(persistence=store)
+        loop.research.research_earning_platforms = AsyncMock(return_value=[])
+
+        # Accumulate a full life of debt ticks → death → reincarnation.
+        _tick_to_death(loop)
+
+        # The new life's hot-memory state is reset...
+        assert loop.debt_engine.debt == Decimal("0.00")
+        assert loop.debt_engine.state.life_number == 2
+        assert loop._event_log == ["Life 2 born"]
+
+        # ...and persisted as such: debt_state/wallet/life_record reflect life 2.
+        saved_debt = store.load_debt_state()
+        assert saved_debt is not None
+        assert saved_debt.debt == Decimal("0.00")
+        assert saved_debt.life_number == 2
+
+        saved_life = store.load_life_record()
+        assert saved_life is not None
+        assert saved_life.life_number == 2
+
+        # Event table is pruned to the current life only — no bleed of the
+        # 20+ debt-tick / death events from life 1.
+        assert store.load_events() == ["Life 2 born"]
+
+        # The permanent soul-crystal archive survives the wipe and is intact.
+        crystals = store.load_soul_crystals()
+        assert [c.life for c in crystals] == [1]
+
+    def test_second_reincarnation_does_not_duplicate_crystals(self):
+        """Dying twice must archive exactly one crystal per life — the
+        preserved archive must never be duplicated by reincarnation."""
+        from main import SurvivalLoop
+
+        store = InMemoryStore()
+        loop = SurvivalLoop(persistence=store)
+        loop.research.research_earning_platforms = AsyncMock(return_value=[])
+
+        _tick_to_death(loop)  # life 1 → death → life 2
+        _tick_to_death(loop)  # life 2 → death → life 3
+
+        assert [c.life for c in store.load_soul_crystals()] == [1, 2]
+        assert loop.debt_engine.state.life_number == 3
+        assert store.load_events() == ["Life 3 born"]
+
 
 # ---------------------------------------------------------------------------
 # Health endpoint

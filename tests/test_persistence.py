@@ -222,8 +222,12 @@ class TestInMemoryStore:
         assert store.load_debt_state() is None
         assert store.load_wallet() is None
         assert store.load_life_record() is None
-        assert store.load_soul_crystals() == []
         assert store.load_events() == []
+
+        # Soul crystals are permanent (§10 Layer 2/3) and must survive a wipe.
+        crystals = store.load_soul_crystals()
+        assert len(crystals) == 1
+        assert crystals[0].life == 1
 
     def test_save_overwrites_previous(self, store):
         store.save_debt_state(DebtState(debt=Decimal("1.00")))
