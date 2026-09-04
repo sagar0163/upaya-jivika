@@ -416,7 +416,7 @@ dashboard.py         — Rich terminal UI, live status
 
 **Unresolved infrastructure items:**
 - Credentials storage — API keys + platform passwords (Render env vars? Supabase vault?)
-- Playwright session persistence across Render restarts
+- ✅ ~~Playwright session persistence across Render restarts~~ — **SOLVED** in `task_executor.py`: platform cookies are persisted to `.uj_sessions/<platform>_cookies.json` and replayed into fresh browser contexts, so the agent stays logged in across deployments / sleep cycles (see the `BrowserSessionManager` in `task_executor.py`).
 - Per-provider token usage tracker to avoid silent rate-limit failures
 
 ---
