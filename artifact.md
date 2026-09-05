@@ -420,7 +420,7 @@ dashboard.py         — Rich terminal UI, live status
 | Cold archive | HuggingFace public dataset | $0 | Effectively unlimited |
 
 **Resolved infrastructure items:**
-- ✅ Credentials storage — `src/vault.py` (CredentialsVault): API keys read from Render env vars; platform passwords persisted to a Supabase `credentials` table (auto-bootstrapped), with in-memory overrides + env fallback.
+- ✅ Credentials storage — `src/vault.py` (CredentialsVault): API keys read from Render env vars; platform passwords persisted to a Supabase `credentials` table (auto-bootstrapped), with in-memory overrides + env fallback. Values are encrypted at rest (Fernet, key derived from `VAULT_ENCRYPTION_KEY`) since a Supabase read-access leak would otherwise expose every platform password in cleartext — soft-configured like the rest of this project's optional secrets (unset → stores plaintext with a loud warning; legacy plaintext rows written before the key existed remain readable).
 - ✅ Playwright session persistence across Render restarts — **SOLVED** in `task_executor.py`: platform cookies are persisted to `.uj_sessions/<platform>_cookies.json` and replayed into fresh browser contexts, so the agent stays logged in across deployments / sleep cycles (see the `BrowserSessionManager` in `task_executor.py`).
 - ✅ Per-provider token usage tracker — `src/rate_limiter.py` (RateLimitTracker) records calls-per-provider across minute/day windows (Supabase-persisted) and `brain_router.py` pre-emptively skips a provider approaching its limit instead of failing over reactively after an error.
 

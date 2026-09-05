@@ -388,6 +388,103 @@ class TestBrainRouterRateLimitIntegration:
 # vault.py — SupabaseSecretStore (skipped without env vars)
 # ============================================================================
 
+class TestSupabaseSecretStoreEncryptionAtRest:
+    """Mock-backed tests for the vault's encryption-at-rest fix.
+
+    Bypasses SupabaseSecretStore.__init__ (which needs real Supabase env
+    vars) and injects a MagicMock client instead, so these run without any
+    external service.
+    """
+
+    def _store_with_mock_client(self, monkeypatch, mock_client, *, encryption_key="s3cr3t-key"):
+        from src.vault import SupabaseSecretStore
+
+        if encryption_key is not None:
+            monkeypatch.setenv("VAULT_ENCRYPTION_KEY", encryption_key)
+        else:
+            monkeypatch.delenv("VAULT_ENCRYPTION_KEY", raising=False)
+
+        store = SupabaseSecretStore.__new__(SupabaseSecretStore)
+        store._client = mock_client
+        return store
+
+    @staticmethod
+    def _set_select_result(mock_client, rows):
+        chain = mock_client.table.return_value.select.return_value.eq.return_value.eq
+        chain.return_value.limit.return_value.execute.return_value.data = rows
+
+    def test_set_encrypts_value_before_storing(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        mock_client = MagicMock()
+        store = self._store_with_mock_client(monkeypatch, mock_client)
+
+        store.set("clickworker", "my-real-password")
+
+        upserted = mock_client.table.return_value.upsert.call_args[0][0]
+        assert upserted["value"] != "my-real-password"
+        assert upserted["value"].startswith("enc:v1:")
+
+    def test_get_decrypts_a_value_it_encrypted(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        mock_client = MagicMock()
+        store = self._store_with_mock_client(monkeypatch, mock_client)
+
+        store.set("clickworker", "my-real-password")
+        stored_value = mock_client.table.return_value.upsert.call_args[0][0]["value"]
+
+        self._set_select_result(mock_client, [
+            {"value": stored_value}
+        ])
+
+        assert store.get("clickworker") == "my-real-password"
+
+    def test_legacy_plaintext_row_still_readable(self, monkeypatch):
+        """A row written before VAULT_ENCRYPTION_KEY existed must not break —
+        it's returned as-is rather than failing the lookup."""
+        from unittest.mock import MagicMock
+
+        mock_client = MagicMock()
+        store = self._store_with_mock_client(monkeypatch, mock_client)
+
+        self._set_select_result(mock_client, [
+            {"value": "old-plaintext-password"}
+        ])
+
+        assert store.get("clickworker") == "old-plaintext-password"
+
+    def test_no_encryption_key_stores_plaintext_with_warning(self, monkeypatch, caplog):
+        from unittest.mock import MagicMock
+
+        mock_client = MagicMock()
+        store = self._store_with_mock_client(monkeypatch, mock_client, encryption_key=None)
+
+        store.set("clickworker", "my-real-password")
+
+        upserted = mock_client.table.return_value.upsert.call_args[0][0]
+        assert upserted["value"] == "my-real-password"
+        assert "plaintext" in caplog.text.lower()
+
+    def test_encrypted_value_unreadable_without_key(self, monkeypatch):
+        """If the key is lost/unset after data was encrypted, get() must
+        fail closed (return None) rather than return ciphertext as if it
+        were the real password."""
+        from unittest.mock import MagicMock
+
+        mock_client = MagicMock()
+        store = self._store_with_mock_client(monkeypatch, mock_client, encryption_key="key-a")
+        store.set("clickworker", "my-real-password")
+        stored_value = mock_client.table.return_value.upsert.call_args[0][0]["value"]
+
+        self._set_select_result(mock_client, [
+            {"value": stored_value}
+        ])
+        monkeypatch.delenv("VAULT_ENCRYPTION_KEY", raising=False)
+
+        assert store.get("clickworker") is None
+
+
 @pytest.mark.skipif(
     not os.environ.get("SUPABASE_URL"),
     reason="Requires Supabase credentials"

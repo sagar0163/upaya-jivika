@@ -8,6 +8,7 @@ apscheduler>=3.10.0
 
 # Database & storage
 supabase>=2.10.0
+cryptography>=42.0.0  # encrypts platform passwords at rest in src/vault.py
 
 # Browser automation
 playwright>=1.45.0

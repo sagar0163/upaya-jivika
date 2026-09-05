@@ -20,3 +20,10 @@ services:
       # rung earlier (GIVE_UP) when this isn't set.
       - key: TWOCAPTCHA_API_KEY
         sync: false
+      # Encrypts platform passwords at rest in the Supabase `credentials`
+      # table (src/vault.py). Soft-configured: unset means passwords are
+      # stored in plaintext (loudly logged) rather than the vault failing —
+      # but this MUST be set for real platform credentials to be protected
+      # against a Supabase read-access leak.
+      - key: VAULT_ENCRYPTION_KEY
+        sync: false

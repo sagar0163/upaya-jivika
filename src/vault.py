@@ -19,11 +19,34 @@ passwords go to Supabase (runtime concern).  The vault unifies access.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 import os
 from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
+
+_ENCRYPTED_PREFIX = "enc:v1:"
+
+
+def _get_fernet():
+    """Return a Fernet cipher derived from ``VAULT_ENCRYPTION_KEY``, or None.
+
+    Soft dependency, same pattern as the rest of this codebase's optional
+    secrets: if the env var isn't set, callers fall back to storing values
+    in plaintext (with a loud warning) rather than crashing — but a Supabase
+    read-access leak (leaked service key, RLS misconfiguration, or a DB
+    dump) would then expose every platform login password in cleartext.
+    Setting this var is what actually closes that hole.
+    """
+    key = os.environ.get("VAULT_ENCRYPTION_KEY")
+    if not key:
+        return None
+    from cryptography.fernet import Fernet
+
+    derived = base64.urlsafe_b64encode(hashlib.sha256(key.encode()).digest())
+    return Fernet(derived)
 
 
 # ---------------------------------------------------------------------------
@@ -159,11 +182,35 @@ class SupabaseSecretStore(SecretStore):
             .execute()
         )
         rows = resp.data or []
-        return rows[0]["value"] if rows else None
+        if not rows:
+            return None
+        raw = rows[0]["value"]
+        if not raw.startswith(_ENCRYPTED_PREFIX):
+            # Legacy plaintext row written before VAULT_ENCRYPTION_KEY was
+            # configured — return as-is rather than failing the lookup.
+            return raw
+        fernet = _get_fernet()
+        if fernet is None:
+            logger.error(
+                f"Credential {provider}/{key} is encrypted but VAULT_ENCRYPTION_KEY "
+                "is not set — cannot decrypt"
+            )
+            return None
+        token = raw[len(_ENCRYPTED_PREFIX):]
+        return fernet.decrypt(token.encode()).decode()
 
     def set(self, provider: str, value: str, key: str = "password") -> None:
+        fernet = _get_fernet()
+        if fernet is not None:
+            stored_value = _ENCRYPTED_PREFIX + fernet.encrypt(value.encode()).decode()
+        else:
+            logger.warning(
+                f"Storing credential {provider}/{key} in plaintext — "
+                "set VAULT_ENCRYPTION_KEY to encrypt platform passwords at rest"
+            )
+            stored_value = value
         self._client.table("credentials").upsert(
-            {"provider": provider, "key": key, "value": value},
+            {"provider": provider, "key": key, "value": stored_value},
             on_conflict="provider,key",
         ).execute()
         logger.info(f"Stored credential for {provider}/{key}")
