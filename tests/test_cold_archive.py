@@ -24,6 +24,15 @@ def _make_archive(token: str = "fake-token", dataset: str = "test/survival-ai-me
     return archive
 
 
+def _fake_cached_shard(tmp_path, content: str, name: str = "cached-shard.jsonl") -> str:
+    """hf_hub_download returns a *local cache file path*, not file content —
+    tests must mock it that way so they'd actually catch a regression of the
+    "path string treated as content" bug this module used to have."""
+    path = tmp_path / name
+    path.write_text(content)
+    return str(path)
+
+
 # ---------------------------------------------------------------------------
 # Graceful fallback
 # ---------------------------------------------------------------------------
@@ -158,10 +167,11 @@ class TestLifeLifecycle:
 class TestAppending:
     """ColdArchive appends to an existing shard file."""
 
-    def test_flush_appends_to_existing_content(self):
+    def test_flush_appends_to_existing_content(self, tmp_path):
         archive = _make_archive()
-        # Simulate an existing shard already on HF
-        archive._api.hf_hub_download.return_value = '{"old": true}\n'
+        # Simulate an existing shard already on HF — hf_hub_download returns
+        # a local cache file *path*, not the content itself.
+        archive._api.hf_hub_download.return_value = _fake_cached_shard(tmp_path, '{"old": true}\n')
         archive.append_event("debt_tick", {"debt": "0.50"})
         archive.flush()
 

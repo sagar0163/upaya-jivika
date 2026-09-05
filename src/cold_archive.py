@@ -155,12 +155,22 @@ class ColdArchive:
             self.flush()
 
     def _read_existing(self, filename: str) -> str:
-        """Download the existing shard content, or '' if it does not exist."""
+        """Download the existing shard content, or '' if it does not exist.
+
+        ``hf_hub_download`` returns a *local cache file path*, not the file's
+        text — reading its return value directly as content silently
+        corrupted every shard after the first flush (the "existing" data
+        became a filesystem path string prepended onto the JSONL).
+        """
         try:
-            return self._api.hf_hub_download(
+            cached_path = self._api.hf_hub_download(
                 repo_id=self._dataset_name,
                 filename=filename,
                 repo_type="dataset",
-            ) or ""
+            )
+            if not cached_path:
+                return ""
+            with open(cached_path, encoding="utf-8") as f:
+                return f.read()
         except Exception:  # noqa: BLE001 - intentional graceful fallback
             return ""

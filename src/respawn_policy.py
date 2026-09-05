@@ -140,8 +140,16 @@ class RespawnPolicyEngine:
         policy: RespawnPolicy | str = RespawnPolicy.CARRY_FORWARD,
     ) -> None:
         self.policy = policy if isinstance(policy, RespawnPolicy) else RespawnPolicy(policy)
-        #: Empirical knowledge accumulated in the current life.
+        #: Effective knowledge view for the current life: the restored
+        #: archive baseline (CARRY_FORWARD) plus this life's own outcomes so
+        #: far. This is what queries (knowledge_for/knowledge_adjustment)
+        #: read — never merged into the archive directly (see _life_delta).
         self._knowledge: dict[tuple[str, str], PlatformKnowledge] = {}
+        #: This life's own new contributions only (excludes any restored
+        #: baseline) — kept separate so on_reincarnate can merge just the
+        #: delta into the archive without double-counting the baseline it
+        #: already restored into _knowledge at the start of this life.
+        self._life_delta: dict[tuple[str, str], PlatformKnowledge] = {}
         #: Ordered log of current-life outcomes (for serialisation).
         self._outcomes: list[TaskOutcome] = []
         #: Archived knowledge carried across lives (persists resets).
@@ -169,6 +177,7 @@ class RespawnPolicyEngine:
         self._outcomes.append(outcome)
         key = (platform, task_type)
         self._knowledge.setdefault(key, PlatformKnowledge(platform=platform, task_type=task_type)).record(outcome)
+        self._life_delta.setdefault(key, PlatformKnowledge(platform=platform, task_type=task_type)).record(outcome)
         return outcome
 
     # -- introspection -------------------------------------------------------
@@ -190,6 +199,15 @@ class RespawnPolicyEngine:
     def archive_dicts(self) -> list[dict[str, Any]]:
         """Return the carry-forward archive as JSON-serialisable dicts."""
         return [k.as_dict() for k in self._archive.values()]
+
+    def life_delta_dicts(self) -> list[dict[str, Any]]:
+        """Return this life's own not-yet-archived contribution.
+
+        Persisted separately from ``knowledge`` (the restored-baseline-plus-
+        this-life effective view) so a mid-life restart doesn't lose track
+        of what should actually be merged into the archive on death.
+        """
+        return [k.as_dict() for k in self._life_delta.values()]
 
     # -- evidence-based adjustment for the TaskScorer ------------------------
 
@@ -230,21 +248,34 @@ class RespawnPolicyEngine:
           life starts already knowing which tasks have historically paid.
         """
         if self.policy == RespawnPolicy.CARRY_FORWARD:
-            for key, knowledge in self._knowledge.items():
+            # Merge only this life's OWN new contributions (_life_delta) into
+            # the archive — never _knowledge, which may already contain a
+            # restored archive baseline from this life's own birth; merging
+            # that would double-count it back into the archive.
+            for key, delta in self._life_delta.items():
                 target = self._archive.setdefault(
-                    key, PlatformKnowledge(platform=knowledge.platform, task_type=knowledge.task_type)
+                    key, PlatformKnowledge(platform=delta.platform, task_type=delta.task_type)
                 )
-                target.attempts += knowledge.attempts
-                target.successes += knowledge.successes
-                target.total_earned += knowledge.total_earned
-                target.total_time_hours += knowledge.total_time_hours
+                target.attempts += delta.attempts
+                target.successes += delta.successes
+                target.total_earned += delta.total_earned
+                target.total_time_hours += delta.total_time_hours
 
-        # In every policy the current-life store is reset; the archive differs
-        # only for FRESH_SLATE (which wipes it too).
-        self._knowledge.clear()
+        # The current-life outcome log and delta always reset on rebirth
+        # (they're this life's raw record, not carried knowledge).
         self._outcomes.clear()
+        self._life_delta.clear()
+        self._knowledge.clear()
 
-        if self.policy == RespawnPolicy.FRESH_SLATE:
+        if self.policy == RespawnPolicy.CARRY_FORWARD:
+            # Restore the full archive into the new life's knowledge so it
+            # actually starts knowing what has historically paid — this is
+            # the whole point of CARRY_FORWARD (see class docstring).
+            # model_copy() so the new life mutating its own knowledge via
+            # record_outcome() can't also mutate the archived aggregates.
+            for key, knowledge in self._archive.items():
+                self._knowledge[key] = knowledge.model_copy()
+        elif self.policy == RespawnPolicy.FRESH_SLATE:
             self._archive.clear()
 
     # -- persistence (Layer 1 storage) ---------------------------------------
@@ -254,6 +285,7 @@ class RespawnPolicyEngine:
         return {
             "policy": self.policy.value,
             "knowledge": self.knowledge_dicts(),
+            "life_delta": self.life_delta_dicts(),
             "outcomes": [o.model_dump() for o in self._outcomes],
             "archive": self.archive_dicts(),
         }
@@ -274,6 +306,11 @@ class RespawnPolicyEngine:
         for item in data.get("knowledge", []):
             k = PlatformKnowledge(**item)
             self._knowledge[(k.platform, k.task_type)] = k
+
+        self._life_delta.clear()
+        for item in data.get("life_delta", []):
+            k = PlatformKnowledge(**item)
+            self._life_delta[(k.platform, k.task_type)] = k
 
         self._outcomes = [
             TaskOutcome(**o) for o in data.get("outcomes", [])

@@ -91,11 +91,28 @@ class TestRespawnDefaultCarryForward:
         engine.record_outcome(platform="clickworker", task_type="microtask", success=True)
         engine.record_outcome(platform="clickworker", task_type="microtask", success=True)
         engine.on_reincarnate()
-        # Archive now exists and current knowledge was reset.
+        # Archive now exists AND the new life's knowledge is restored from
+        # it — CARRY_FORWARD's whole point is that the reborn agent already
+        # knows what has historically paid, not that history is stranded in
+        # a separate archive the new life can't see.
         assert len(engine._archive) == 1
-        assert len(engine) == 0
-        # But the aggregate view for the new life should still... current is empty;
-        # history lives in the archive.
+        assert len(engine) == 1
+        restored = engine.knowledge_for("clickworker", "microtask")
+        assert restored is not None
+        assert restored.attempts == 2
+        assert restored.successes == 2
+
+    def test_reincarnate_restored_knowledge_is_independent_copy(self):
+        """Recording outcomes in the new life must not corrupt the archive —
+        the restored PlatformKnowledge must be a separate object."""
+        engine = RespawnPolicyEngine()
+        engine.record_outcome(platform="clickworker", task_type="microtask", success=True)
+        engine.on_reincarnate()
+
+        engine.record_outcome(platform="clickworker", task_type="microtask", success=False)
+
+        assert engine.knowledge_for("clickworker", "microtask").attempts == 2
+        assert engine._archive[("clickworker", "microtask")].attempts == 1
 
     def test_accumulates_across_multiple_reincarnations(self):
         engine = RespawnPolicyEngine()
@@ -226,9 +243,11 @@ class TestMainLoopWiring:
             mode=DifficultyMode.NORMAL,
         )
         loop._on_death(state)
-        # Archive survives in the engine (CARRY_FORWARD), current is reset.
+        # Archive survives in the engine (CARRY_FORWARD) AND the new life's
+        # knowledge is restored from it — the reborn agent already knows
+        # what has historically paid.
         assert loop.respawn._archive[("clickworker", "microtask")].attempts == 2
-        assert len(loop.respawn) == 0
+        assert loop.respawn.knowledge_for("clickworker", "microtask").attempts == 2
 
     def test_status_includes_respawn(self):
         loop = self._make_loop()
