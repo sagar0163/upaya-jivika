@@ -325,6 +325,14 @@ class TestInMemoryStore:
 
         assert store.is_platform_blocked("scammy.io") is True
 
+    def test_clear_preserves_scammed_platforms(self, store):
+        store.mark_platform_scammed("scammed.io", {"type": "time_scam"})
+        store.save_wallet(Wallet(free=Decimal("1.00")))
+
+        store.clear()
+
+        assert store.is_platform_scammed("scammed.io") is True
+
     def test_save_overwrites_previous(self, store):
         store.save_debt_state(DebtState(debt=Decimal("1.00")))
         store.save_debt_state(DebtState(debt=Decimal("2.00")))
@@ -364,6 +372,23 @@ class TestBlockedPlatforms:
     def test_distinct_platforms_independent(self, store):
         store.mark_platform_blocked("badplatform.io", {"vendor": "cloudflare"})
         assert store.is_platform_blocked("goodplatform.io") is False
+
+
+class TestScammedPlatforms:
+    @pytest.fixture
+    def store(self):
+        return InMemoryStore()
+
+    def test_unscammed_platform_returns_false(self, store):
+        assert store.is_platform_scammed("clickworker") is False
+
+    def test_marked_platform_is_scammed(self, store):
+        store.mark_platform_scammed("scammed.io", {"type": "time_scam"})
+        assert store.is_platform_scammed("scammed.io") is True
+
+    def test_distinct_platforms_independent(self, store):
+        store.mark_platform_scammed("scammed.io", {"type": "time_scam"})
+        assert store.is_platform_scammed("goodplatform.io") is False
 
 
 # ---------------------------------------------------------------------------

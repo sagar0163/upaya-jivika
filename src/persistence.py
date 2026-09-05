@@ -189,6 +189,19 @@ class PersistenceStore(ABC):
     def mark_platform_blocked(self, platform: str, data: dict[str, Any]) -> None:
         """Permanently record ``platform`` as blocked, with bypass attempt data."""
 
+    @abstractmethod
+    def is_platform_scammed(self, platform: str) -> bool:
+        """Return True if this platform confirmed-scammed the agent (§20).
+
+        Permanent, like :meth:`is_platform_blocked` — a platform that scammed
+        a past life is never rejoined; the lesson also lives in the Soul
+        Crystal, but this check must be cheap and available before research.
+        """
+
+    @abstractmethod
+    def mark_platform_scammed(self, platform: str, data: dict[str, Any]) -> None:
+        """Permanently record ``platform`` as a confirmed scam, with evidence."""
+
 
 # ---------------------------------------------------------------------------
 # In-memory fallback
@@ -205,6 +218,7 @@ class InMemoryStore(PersistenceStore):
         self._events: list[str] = []
         self._processed_payments: dict[str, dict[str, Any]] = {}
         self._blocked_platforms: dict[str, dict[str, Any]] = {}
+        self._scammed_platforms: dict[str, dict[str, Any]] = {}
 
     def save_debt_state(self, state: DebtState) -> None:
         self._debt_state = _debt_state_to_dict(state)
@@ -244,8 +258,8 @@ class InMemoryStore(PersistenceStore):
         # Preserve the permanent soul-crystal archive (§10 Layer 2/3): it must
         # survive reincarnation. Only wipe the hot-memory state (wallet, task
         # queue, events, life record) that belongs to the dying life.
-        # processed_payments is also permanent (§20) and is intentionally not
-        # cleared here.
+        # processed_payments, blocked_platforms and scammed_platforms are also
+        # permanent (§19/§20) and are intentionally not cleared here.
         self._debt_state = None
         self._wallet = None
         self._life_record = None
@@ -262,6 +276,12 @@ class InMemoryStore(PersistenceStore):
 
     def mark_platform_blocked(self, platform: str, data: dict[str, Any]) -> None:
         self._blocked_platforms[platform] = dict(data)
+
+    def is_platform_scammed(self, platform: str) -> bool:
+        return platform in self._scammed_platforms
+
+    def mark_platform_scammed(self, platform: str, data: dict[str, Any]) -> None:
+        self._scammed_platforms[platform] = dict(data)
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +346,11 @@ class SupabaseStore(PersistenceStore):
             created_at TIMESTAMPTZ DEFAULT now()
         );
         CREATE TABLE IF NOT EXISTS blocked_platforms (
+            id    TEXT PRIMARY KEY,
+            data  JSONB NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS scammed_platforms (
             id    TEXT PRIMARY KEY,
             data  JSONB NOT NULL,
             created_at TIMESTAMPTZ DEFAULT now()
@@ -440,6 +465,14 @@ class SupabaseStore(PersistenceStore):
 
     def mark_platform_blocked(self, platform: str, data: dict[str, Any]) -> None:
         self._upsert_row("blocked_platforms", platform, data)
+
+    # -- scammed_platforms (§20 permanent scam memory) -----------------------
+
+    def is_platform_scammed(self, platform: str) -> bool:
+        return self._load_row("scammed_platforms", platform) is not None
+
+    def mark_platform_scammed(self, platform: str, data: dict[str, Any]) -> None:
+        self._upsert_row("scammed_platforms", platform, data)
 
 
 # ---------------------------------------------------------------------------

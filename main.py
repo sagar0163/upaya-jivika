@@ -37,6 +37,7 @@ from src.payoneer_webhook import (
 from src.persistence import PersistenceStore, create_persistence_store
 from src.research_loop import ResearchAgent
 from src.respawn_policy import RespawnPolicyEngine
+from src.scam_detection import ScamEvent, ScamTracker
 from src.soul_crystal import LifeRecord, ReincarnationEngine
 from src.state_machine import SurvivalStateMachine
 from src.wallet import Wallet
@@ -107,6 +108,7 @@ class SurvivalLoop:
         self.cold_archive = ColdArchive()
         self.alerts = AlertSystem()
         self.respawn = RespawnPolicyEngine()
+        self.scam_tracker = ScamTracker(self.persistence)
 
         # Wire persistence on every debt tick
         self.debt_engine._on_tick = self._on_tick  # type: ignore[assignment]
@@ -518,6 +520,49 @@ class SurvivalLoop:
             "debt_repaid": str(breakdown["debt_repaid"]),
             "to_free": str(breakdown["to_free"]),
         }
+
+    # -- scam handling (§20) -------------------------------------------------
+
+    def record_scam(self, event: ScamEvent) -> dict[str, Any]:
+        """Process a confirmed scam: permanent blacklist + wallet reversal.
+
+        Called after the (external) research step confirms a suspected scam
+        is real, not a legitimate payment delay. A chargeback additionally
+        reverses the earlier wallet credit — money already spent or repaid
+        toward debt reappears as debt, since it was never really earned.
+        """
+        self.scam_tracker.record_scam(event)
+
+        reversal: dict[str, Decimal] | None = None
+        if event.scam_type.value == "chargeback" and event.amount_lost > 0:
+            reversal = self.scam_tracker.resolve_chargeback(self.wallet, event.amount_lost)
+
+        self._event_log.append(
+            f"Scam confirmed: {event.platform} ({event.scam_type.value}) — {event.lesson or 'no lesson recorded'}"
+        )
+        self.cold_archive.append_event("scam_confirmed", event.to_dict())
+        self._persist_all()
+        self._broadcast_event("scam_confirmed")
+        logger.warning(
+            "Scam confirmed on %s (%s) — platform permanently blacklisted",
+            event.platform,
+            event.scam_type.value,
+        )
+
+        try:
+            self.diary.on_tick(
+                life_number=self.debt_engine.state.life_number,
+                debt=self.debt_engine.debt,
+                state=self.state_machine.state.value,
+                events=list(self._event_log),
+            )
+        except Exception:
+            logger.exception("Diary write failed on scam confirmation")
+
+        result: dict[str, Any] = {"platform": event.platform, "scam_type": event.scam_type.value}
+        if reversal is not None:
+            result["wallet_reversal"] = {k: str(v) for k, v in reversal.items()}
+        return result
 
     # -- lifecycle ----------------------------------------------------------
 

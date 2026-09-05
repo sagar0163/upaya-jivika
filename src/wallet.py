@@ -70,6 +70,23 @@ class Wallet(BaseModel):
         self.free += to_free
         return {"debt_repaid": debt_repaid, "to_free": to_free, "to_locked": debt_repaid}
 
+    def reverse_credit(self, amount: float | Decimal) -> dict[str, Decimal]:
+        """Reverse a prior credit (§20 chargeback).
+
+        Pulls the reversal from the free pool first. If the free pool can't
+        cover it — the money was already spent or repaid debt — the shortfall
+        reappears as debt, since it was never really earned.
+        """
+        amt = self._dec(amount)
+        if amt <= 0:
+            raise WalletError("Reversal amount must be positive")
+
+        from_free = min(amt, self.free)
+        self.free -= from_free
+        added_debt = amt - from_free
+        self.debt += added_debt
+        return {"from_free": from_free, "added_debt": added_debt}
+
     # -- user withdrawals (user can touch both pools) ----------------------
 
     def user_withdraw_free(self, amount: float | Decimal) -> Decimal:

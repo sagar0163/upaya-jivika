@@ -443,7 +443,7 @@ dashboard.py         — Rich terminal UI, live status
 | ✅ | Audit trail | **SOLVED** — src/audit_trail.py records every scored/executed decision with reasoning, state + debt |
 | ✅ | Alert system | **SOLVED**: `src/alert_system.py` pluggable notifiers (default logging) fire once on entering danger states & on death |
 | ✅ | Task timeout | **SOLVED** — `asyncio.wait_for` cap in `TaskExecutor.execute_task` (default 300s); excess → failed result, $0 credit |
-| 🔴 | Scam handling | Strategy designed (§20: pre-join legitimacy scoring, payment-window monitoring, scam response protocol) — not yet built |
+| 🟡 | Scam handling | §20 legitimacy scoring/payment-window tracking/blacklist/wallet-reversal built — live research step (DDG/review scoring) not yet wired |
 
 ---
 
@@ -742,6 +742,8 @@ playwright-captcha>=0.3    # free Turnstile + reCAPTCHA click solver
 ---
 
 ## 20. Scam Handling System
+
+**Status: Partially implemented (`src/scam_detection.py`).** The deterministic core is built and unit-tested: `score_legitimacy`/`legitimacy_gate` (pre-join scoring from structured signals), `PaymentWindow`/`ScamTracker` (payment-window + grace-period tracking), `ScamTracker.record_scam` (permanent per-platform blacklist, survives `clear()`), `Wallet.reverse_credit` + `resolve_chargeback` (wallet reversal on chargeback), and `enforce_no_upfront_payment` (the unconditional §20 rule 1 guard). `TaskExecutor._get_connector` refuses to rejoin a platform `ScamTracker` reports as scammed; `SurvivalLoop.record_scam` wires the blacklist + wallet reversal + diary/cold-archive logging end to end. **Not yet built:** the research step that actually scores legitimacy from live DDG/review data and distinguishes a confirmed scam from a legitimate delay — `score_legitimacy` takes pre-gathered `PlatformSignals` rather than doing the research itself, and nothing yet calls it or drives `ScamTracker`'s payment-window checks on a schedule.
 
 **The cruel reality: debt keeps ticking while the agent is being scammed. Lost time = lost survival. A 3-day scam in Critical state is a likely death sentence.**
 

@@ -1071,6 +1071,25 @@ class TestTaskExecutor:
                 await executor._get_connector(Platform.CLICKWORKER)
 
     @pytest.mark.asyncio
+    async def test_get_connector_scammed_platform_raises(self, mock_wallet):
+        """A platform that already scammed this agent (§20) is never rejoined."""
+        from src.persistence import InMemoryStore
+        from src.scam_detection import PlatformScammedError, ScamTracker
+        from src.task_executor import TaskExecutor
+        from src.task_scorer import Platform
+
+        store = InMemoryStore()
+        store.mark_platform_scammed(Platform.CLICKWORKER.value, {"type": "time_scam"})
+        tracker = ScamTracker(store)
+
+        with patch("src.task_executor.BrowserSessionManager"):
+            executor = TaskExecutor(wallet=mock_wallet, headless=True, scam_tracker=tracker)
+            executor.set_credentials(Platform.CLICKWORKER, {"email": "e", "password": "p"})
+
+            with pytest.raises(PlatformScammedError):
+                await executor._get_connector(Platform.CLICKWORKER)
+
+    @pytest.mark.asyncio
     async def test_get_connector_unblocked_platform_proceeds(self, executor):
         """A platform not in the block list is unaffected by an attached tracker."""
         from src.captcha_handler import BotDetectionTracker

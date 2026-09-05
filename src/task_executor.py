@@ -34,6 +34,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from src.audit_trail import AuditTrail
 from src.captcha_handler import BotDetectionTracker, PlatformBlockError
 from src.guardrails import get_guardrail
+from src.scam_detection import PlatformScammedError, ScamTracker
 from src.state_machine import resolve_state
 from src.task_scorer import (
     PaymentMethod,
@@ -798,6 +799,7 @@ class TaskExecutor:
         task_timeout_seconds: float = DEFAULT_TASK_TIMEOUT_SECONDS,
         audit_trail: Optional[AuditTrail] = None,
         bot_tracker: Optional[BotDetectionTracker] = None,
+        scam_tracker: Optional[ScamTracker] = None,
     ) -> None:
         self.wallet = wallet
         self.headless = headless
@@ -809,6 +811,9 @@ class TaskExecutor:
         # §19: platforms that exhausted the stealth escalation ladder are
         # never retried — checked before spending a login attempt on them.
         self.bot_tracker = bot_tracker
+        # §20: a platform that already confirmed-scammed this agent is never
+        # rejoined — checked before spending a login attempt on it.
+        self.scam_tracker = scam_tracker
         self.session_manager = BrowserSessionManager(
             headless=headless, storage_dir=session_dir
         )
@@ -860,6 +865,11 @@ class TaskExecutor:
         if self.bot_tracker is not None and self.bot_tracker.is_blocked(platform.value):
             raise PlatformBlockError(
                 f"{platform.value} is permanently blocked (exhausted §19 stealth ladder)"
+            )
+
+        if self.scam_tracker is not None and self.scam_tracker.is_platform_scammed(platform.value):
+            raise PlatformScammedError(
+                f"{platform.value} confirmed-scammed this agent (§20) — never rejoined"
             )
 
         if platform not in CONNECTORS:
