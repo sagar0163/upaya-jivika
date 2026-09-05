@@ -213,6 +213,25 @@
     .withdraw-status.ok { color: var(--accent); }
     .withdraw-status.err { color: var(--danger); }
 
+    /* Pending Spends */
+    .pending-spends { grid-column: span 1; }
+    .pending-spend-list { display: flex; flex-direction: column; gap: 10px; }
+    .pending-spend-empty { font-size: 0.8rem; color: var(--fg-muted); }
+    .pending-spend-item {
+      display: flex; flex-direction: column; gap: 4px; padding: 10px;
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    }
+    .pending-spend-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .pending-spend-amount { font-family: var(--mono); font-weight: 700; color: var(--warning); }
+    .pending-spend-reason { font-size: 0.8rem; color: var(--fg-muted); }
+    .pending-spend-deadline { font-size: 0.7rem; color: var(--fg-muted); }
+    .pending-spend-reject {
+      padding: 6px 12px; font-size: 0.75rem; font-weight: 600; font-family: var(--sans);
+      background: var(--danger); color: var(--bg); border: none; border-radius: 6px; cursor: pointer;
+    }
+    .pending-spend-reject:hover { opacity: 0.85; }
+    .pending-spend-reject:disabled { opacity: 0.5; cursor: not-allowed; }
+
     /* Total Earned */
     .total-earned { grid-column: span 1; }
     .total-earned .value { font-size: 2.5rem; font-weight: 700; font-family: var(--mono); color: var(--accent); }
@@ -369,6 +388,14 @@
           <button type="submit" class="withdraw-btn" id="withdrawBtn">Withdraw via Payoneer</button>
           <div class="withdraw-status" id="withdrawStatus"></div>
         </form>
+      </div>
+
+      <!-- Pending AI Spends -->
+      <div class="card pending-spends">
+        <h2>Pending AI Spends</h2>
+        <div class="pending-spend-list" id="pendingSpendList">
+          <div class="pending-spend-empty">No spends awaiting veto.</div>
+        </div>
       </div>
 
       <!-- Total Earned -->
@@ -740,6 +767,61 @@
       }
     });
 
+    // ---- Pending AI Spends ----
+    const pendingSpendList = document.getElementById('pendingSpendList');
+
+    function fmtDeadline(iso) {
+      const ms = new Date(iso).getTime() - Date.now();
+      if (ms <= 0) return 'resolving…';
+      const hours = Math.floor(ms / 3600000);
+      const mins = Math.floor((ms % 3600000) / 60000);
+      return `auto-approves in ${hours}h ${mins}m`;
+    }
+
+    async function refreshPendingSpends() {
+      try {
+        const resp = await fetch('/api/spend/pending');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        renderPendingSpends(data.pending || []);
+      } catch (err) {
+        // Silent — dashboard keeps showing the last known state.
+      }
+    }
+
+    function renderPendingSpends(pending) {
+      if (pending.length === 0) {
+        pendingSpendList.innerHTML = '<div class="pending-spend-empty">No spends awaiting veto.</div>';
+        return;
+      }
+      pendingSpendList.innerHTML = '';
+      pending.forEach((p) => {
+        const item = document.createElement('div');
+        item.className = 'pending-spend-item';
+        item.innerHTML = `
+          <div class="pending-spend-row">
+            <span class="pending-spend-amount">$${p.amount}</span>
+            <button class="pending-spend-reject" data-id="${p.spend_id}">Veto</button>
+          </div>
+          <div class="pending-spend-reason">${p.reason}</div>
+          <div class="pending-spend-deadline">${fmtDeadline(p.veto_deadline)}</div>
+        `;
+        pendingSpendList.appendChild(item);
+      });
+      pendingSpendList.querySelectorAll('.pending-spend-reject').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          try {
+            await fetch(`/api/spend/${btn.dataset.id}/reject`, { method: 'POST' });
+          } finally {
+            refreshPendingSpends();
+          }
+        });
+      });
+    }
+
+    setInterval(refreshPendingSpends, 30000);
+
     // ---- Filter Buttons ----
     document.querySelectorAll('.feed-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -891,6 +973,7 @@
     function init() {
       initChart();
       connect();
+      refreshPendingSpends();
     }
 
     if (document.readyState === 'loading') {

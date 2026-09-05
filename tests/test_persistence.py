@@ -391,6 +391,34 @@ class TestScammedPlatforms:
         assert store.is_platform_scammed("goodplatform.io") is False
 
 
+class TestPendingSpends:
+    @pytest.fixture
+    def store(self):
+        return InMemoryStore()
+
+    def test_unknown_spend_returns_none(self, store):
+        assert store.load_pending_spend("nope") is None
+
+    def test_save_and_load_pending_spend(self, store):
+        store.save_pending_spend("s1", {"amount": "5.00"})
+        assert store.load_pending_spend("s1") == {"amount": "5.00"}
+
+    def test_load_pending_spends_lists_all(self, store):
+        store.save_pending_spend("s1", {"amount": "5.00"})
+        store.save_pending_spend("s2", {"amount": "3.00"})
+        assert len(store.load_pending_spends()) == 2
+
+    def test_delete_pending_spend(self, store):
+        store.save_pending_spend("s1", {"amount": "5.00"})
+        store.delete_pending_spend("s1")
+        assert store.load_pending_spend("s1") is None
+
+    def test_clear_removes_pending_spends(self, store):
+        store.save_pending_spend("s1", {"amount": "5.00"})
+        store.clear()
+        assert store.load_pending_spends() == []
+
+
 # ---------------------------------------------------------------------------
 # Serialisation robustness — missing fields / schema drift
 # ---------------------------------------------------------------------------

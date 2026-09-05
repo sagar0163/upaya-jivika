@@ -437,7 +437,7 @@ dashboard.py         — Rich terminal UI, live status
 | 🟡 | Withdrawal mechanism | Dashboard UI + `POST /api/withdraw` built (`src/withdrawal.py`) — debits the chosen pool and requests a Payoneer payout, queuing for manual processing until `PAYONEER_API_KEY`/`PAYONEER_PROGRAM_ID` are configured |
 | 🟡 | Ethical guardrail | **SOLVED** — `src/guardrails.py` hard blacklist (spam/fake review/plagiarism/ToS violation/illegal) enforced in `task_scorer` + `task_executor` even in Terminal state |
 | 🟡 | Respawn policy | **SOLVED** (`src/respawn_policy.py`) — `FRESH_SLATE` vs `CARRY_FORWARD` of empirical task scores on rebirth |
-| 🟡 | Human approval gate | User confirm before AI spends from free pool? |
+| 🟡 | Human approval gate | `src/approval_gate.py` built — veto-window model: spends ≥ $2.00 are announced (alert + dashboard card) and held for a 6-hour window rather than blocking; auto-approve and execute via `Wallet.ai_spend` if unrejected, resolved once per minute in `survival_tick`. `GET /api/spend/pending` / `POST /api/spend/{id}/reject` plus a dashboard "Pending AI Spends" card let the user veto within the window. Spends below $2.00 execute immediately through the existing wallet gates |
 | ✅ | Audit trail | **SOLVED** — src/audit_trail.py records every scored/executed decision with reasoning, state + debt |
 | ✅ | Alert system | **SOLVED**: `src/alert_system.py` pluggable notifiers (default logging) fire once on entering danger states & on death |
 | ✅ | Task timeout | **SOLVED** — `asyncio.wait_for` cap in `TaskExecutor.execute_task` (default 300s); excess → failed result, $0 credit |

@@ -202,6 +202,22 @@ class PersistenceStore(ABC):
     def mark_platform_scammed(self, platform: str, data: dict[str, Any]) -> None:
         """Permanently record ``platform`` as a confirmed scam, with evidence."""
 
+    @abstractmethod
+    def save_pending_spend(self, spend_id: str, data: dict[str, Any]) -> None:
+        """Save/update a pending AI spend awaiting its veto window (§14)."""
+
+    @abstractmethod
+    def load_pending_spend(self, spend_id: str) -> Optional[dict[str, Any]]:
+        """Load one pending spend by id, or None if it doesn't exist."""
+
+    @abstractmethod
+    def load_pending_spends(self) -> list[dict[str, Any]]:
+        """Load all pending spends awaiting resolution."""
+
+    @abstractmethod
+    def delete_pending_spend(self, spend_id: str) -> None:
+        """Remove a pending spend once it's been resolved (approved/rejected)."""
+
 
 # ---------------------------------------------------------------------------
 # In-memory fallback
@@ -219,6 +235,7 @@ class InMemoryStore(PersistenceStore):
         self._processed_payments: dict[str, dict[str, Any]] = {}
         self._blocked_platforms: dict[str, dict[str, Any]] = {}
         self._scammed_platforms: dict[str, dict[str, Any]] = {}
+        self._pending_spends: dict[str, dict[str, Any]] = {}
 
     def save_debt_state(self, state: DebtState) -> None:
         self._debt_state = _debt_state_to_dict(state)
@@ -264,6 +281,9 @@ class InMemoryStore(PersistenceStore):
         self._wallet = None
         self._life_record = None
         self._events.clear()
+        # Pending spends are life-scoped (tied to a wallet that's about to
+        # reset) — a dying life's undecided spend decisions don't carry over.
+        self._pending_spends.clear()
 
     def is_payment_processed(self, payment_id: str) -> bool:
         return payment_id in self._processed_payments
@@ -282,6 +302,18 @@ class InMemoryStore(PersistenceStore):
 
     def mark_platform_scammed(self, platform: str, data: dict[str, Any]) -> None:
         self._scammed_platforms[platform] = dict(data)
+
+    def save_pending_spend(self, spend_id: str, data: dict[str, Any]) -> None:
+        self._pending_spends[spend_id] = dict(data)
+
+    def load_pending_spend(self, spend_id: str) -> Optional[dict[str, Any]]:
+        return self._pending_spends.get(spend_id)
+
+    def load_pending_spends(self) -> list[dict[str, Any]]:
+        return list(self._pending_spends.values())
+
+    def delete_pending_spend(self, spend_id: str) -> None:
+        self._pending_spends.pop(spend_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +383,11 @@ class SupabaseStore(PersistenceStore):
             created_at TIMESTAMPTZ DEFAULT now()
         );
         CREATE TABLE IF NOT EXISTS scammed_platforms (
+            id    TEXT PRIMARY KEY,
+            data  JSONB NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS pending_spends (
             id    TEXT PRIMARY KEY,
             data  JSONB NOT NULL,
             created_at TIMESTAMPTZ DEFAULT now()
@@ -449,6 +486,9 @@ class SupabaseStore(PersistenceStore):
         for table in self._ROW_TABLES:
             self._delete_all(table)
         self._delete_all("events")
+        # Pending spends are life-scoped (tied to a wallet that's about to
+        # reset) — a dying life's undecided spend decisions don't carry over.
+        self._delete_all("pending_spends")
 
     # -- processed_payments (§20 payment audit trail — permanent) -----------
 
@@ -473,6 +513,20 @@ class SupabaseStore(PersistenceStore):
 
     def mark_platform_scammed(self, platform: str, data: dict[str, Any]) -> None:
         self._upsert_row("scammed_platforms", platform, data)
+
+    # -- pending_spends (§14 human approval gate — life-scoped) --------------
+
+    def save_pending_spend(self, spend_id: str, data: dict[str, Any]) -> None:
+        self._upsert_row("pending_spends", spend_id, data)
+
+    def load_pending_spend(self, spend_id: str) -> Optional[dict[str, Any]]:
+        return self._load_row("pending_spends", spend_id)
+
+    def load_pending_spends(self) -> list[dict[str, Any]]:
+        return self._load_all("pending_spends")
+
+    def delete_pending_spend(self, spend_id: str) -> None:
+        self._client.table("pending_spends").delete().eq("id", spend_id).execute()
 
 
 # ---------------------------------------------------------------------------

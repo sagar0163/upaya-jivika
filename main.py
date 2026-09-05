@@ -22,8 +22,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from src.alert_system import AlertSystem
+from src.alert_system import AlertLevel, AlertSystem
 from src.ancestral_memory import AncestralMemory, load_ancestral_memory
+from src.approval_gate import ApprovalGate, SpendDecision
 from src.cold_archive import ColdArchive
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
 from src.diary import DiaryWriter
@@ -41,7 +42,7 @@ from src.respawn_policy import RespawnPolicyEngine
 from src.scam_detection import ScamEvent, ScamTracker
 from src.soul_crystal import LifeRecord, ReincarnationEngine
 from src.state_machine import SurvivalStateMachine
-from src.wallet import Wallet, WalletError
+from src.wallet import SpendRequest, Wallet, WalletError
 from src.withdrawal import WithdrawalError, WithdrawalPool, process_withdrawal
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,7 @@ class SurvivalLoop:
         self.respawn = RespawnPolicyEngine()
         self.scam_tracker = ScamTracker(self.persistence)
         self.email_inbox = EmailInboxClient()
+        self.approval_gate = ApprovalGate(self.persistence)
 
         # Wire persistence on every debt tick
         self.debt_engine._on_tick = self._on_tick  # type: ignore[assignment]
@@ -421,6 +423,7 @@ class SurvivalLoop:
             return
         self.state_machine.update(self.debt_engine.debt)
         self.wallet.debt = self.debt_engine.debt
+        self.resolve_pending_spends()
 
     def record_task_outcome(
         self,
@@ -632,6 +635,83 @@ class SurvivalLoop:
             result.payout_status.value,
         )
         return result.to_dict()
+
+    # -- human approval gate (§14 — AI free-pool spending) -------------------
+
+    def request_ai_spend(self, amount: Decimal, certainty: Decimal, reason: str) -> dict[str, Any]:
+        """The AI's entry point for spending from the free pool.
+
+        Small spends still execute immediately through ``Wallet.ai_spend``'s
+        existing debt/certainty/fraction gates. Spends at or above the veto
+        threshold are held for a window instead — the user is alerted and
+        can reject it; if nobody responds, ``resolve_pending_spends`` (run
+        every survival tick) auto-approves it once the window elapses. The
+        AI never blocks waiting on a human either way.
+        """
+        decision, pending = self.approval_gate.request_spend(amount, certainty, reason)
+
+        if decision is SpendDecision.EXECUTED_IMMEDIATELY:
+            debited = self.wallet.ai_spend(SpendRequest(amount=amount, certainty=certainty))
+            self._event_log.append(f"AI spend executed: ${debited} — {reason}")
+            self._persist_all()
+            return {"status": decision.value, "amount": str(debited), "reason": reason}
+
+        assert pending is not None  # PENDING always returns a PendingSpend
+        self._event_log.append(
+            f"AI spend request pending veto (deadline {pending.veto_deadline.isoformat()}): "
+            f"${amount} — {reason}"
+        )
+        self.cold_archive.append_event("spend_request_pending", pending.to_dict())
+        self.alerts.raise_alert(
+            level=AlertLevel.WARNING,
+            state=self.state_machine.state.value,
+            message=f"AI wants to spend ${amount} — {reason}. Reject within the veto window to block it.",
+            debt=self.debt_engine.debt,
+            context=pending.to_dict(),
+        )
+        self._persist_all()
+        self._broadcast_event("spend_request_pending")
+        return {
+            "status": decision.value,
+            "spend_id": pending.spend_id,
+            "veto_deadline": pending.veto_deadline.isoformat(),
+        }
+
+    def reject_pending_spend(self, spend_id: str) -> bool:
+        """User vetoes a pending AI spend before its window elapses."""
+        rejected = self.approval_gate.reject(spend_id)
+        if rejected:
+            self._event_log.append(f"AI spend request {spend_id} rejected by user")
+            self._persist_all()
+            self._broadcast_event("spend_request_rejected")
+        return rejected
+
+    def resolve_pending_spends(self) -> list[dict[str, Any]]:
+        """Resolve every pending spend whose veto window has elapsed.
+
+        Auto-approved spends are executed here (through ``Wallet.ai_spend``,
+        so its gates are re-checked against current wallet state); rejected
+        ones are just logged. Runs every survival tick.
+        """
+        results: list[dict[str, Any]] = []
+        for pending, decision in self.approval_gate.resolve_due():
+            entry: dict[str, Any] = {"spend_id": pending.spend_id, "decision": decision.value}
+            if decision is SpendDecision.AUTO_APPROVED:
+                try:
+                    debited = self.wallet.ai_spend(SpendRequest(amount=pending.amount, certainty=pending.certainty))
+                    entry["amount"] = str(debited)
+                    self._event_log.append(f"AI spend auto-approved after veto window: ${debited} — {pending.reason}")
+                except WalletError as exc:
+                    entry["error"] = str(exc)
+                    self._event_log.append(f"AI spend {pending.spend_id} auto-approval failed: {exc}")
+            else:
+                self._event_log.append(f"AI spend {pending.spend_id} was rejected — ${pending.amount} not spent")
+            results.append(entry)
+
+        if results:
+            self._persist_all()
+            self._broadcast_event("spend_requests_resolved")
+        return results
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -894,6 +974,27 @@ async def email_scan_endpoint():
     if loop is None:
         raise HTTPException(status_code=503, detail="Survival loop not initialised")
     return {"alerts_found": loop.scan_email_for_payment_alerts()}
+
+
+@app.get("/api/spend/pending")
+async def pending_spends_endpoint():
+    """List AI spend requests currently held in their veto window."""
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+    return {"pending": [p.to_dict() for p in loop.approval_gate.list_pending()]}
+
+
+@app.post("/api/spend/{spend_id}/reject")
+async def reject_spend_endpoint(spend_id: str):
+    """User vetoes a pending AI spend before its window elapses."""
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+    rejected = loop.reject_pending_spend(spend_id)
+    if not rejected:
+        raise HTTPException(status_code=404, detail="No pending (unexpired) spend with that id")
+    return {"rejected": True, "spend_id": spend_id}
 
 
 @app.post("/api/withdraw")
