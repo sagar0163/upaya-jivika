@@ -26,6 +26,8 @@ from src.alert_system import AlertLevel, AlertSystem
 from src.ancestral_memory import AncestralMemory, load_ancestral_memory
 from src.api_auth import require_api_token
 from src.approval_gate import ApprovalGate, SpendDecision
+from src.audit_trail import AuditTrail
+from src.captcha_handler import BotDetectionTracker
 from src.cold_archive import ColdArchive
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
 from src.diary import DiaryWriter
@@ -42,9 +44,17 @@ from src.research_loop import ResearchAgent
 from src.respawn_policy import RespawnPolicyEngine
 from src.scam_detection import ScamEvent, ScamTracker, ScamType
 from src.soul_crystal import LifeRecord, ReincarnationEngine
-from src.state_machine import SurvivalStateMachine
+from src.state_machine import SurvivalStateMachine, min_certainty
+from src.task_executor import TaskExecutor
+from src.task_scorer import Platform as EarningPlatform
+from src.vault import get_vault
 from src.wallet import SpendRequest, Wallet, WalletError
 from src.withdrawal import WithdrawalError, WithdrawalPool, process_withdrawal
+
+# §7 platforms with a real connector wired in TaskExecutor.CONNECTORS. Only
+# these are ever passed to discover_tasks — a platform without a connector
+# would just raise ExecutionError on every attempt.
+EARNING_PLATFORMS = [EarningPlatform.CLICKWORKER, EarningPlatform.TOLOKA, EarningPlatform.PROLIFIC]
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +125,15 @@ class SurvivalLoop:
         self.scam_tracker = ScamTracker(self.persistence)
         self.email_inbox = EmailInboxClient()
         self.approval_gate = ApprovalGate(self.persistence)
+        self.bot_tracker = BotDetectionTracker(self.persistence)
+        self.audit_trail = AuditTrail()
+        self.task_executor = TaskExecutor(
+            wallet=self.wallet,
+            vault=get_vault(),
+            scam_tracker=self.scam_tracker,
+            bot_tracker=self.bot_tracker,
+            audit_trail=self.audit_trail,
+        )
 
         # Wire persistence on every debt tick
         self.debt_engine._on_tick = self._on_tick  # type: ignore[assignment]
@@ -417,6 +436,76 @@ class SurvivalLoop:
                 await self.ws_manager.broadcast(status)
         except Exception:
             logger.exception("Research cycle failed")
+
+    async def earning_cycle(self) -> list[dict[str, Any]]:
+        """Discover → score → execute real tasks via TaskExecutor (artifact.md §7/§14).
+
+        The only entry point that turns research/wallet bookkeeping into an
+        actual attempt at earning money. Silently does nothing per-platform
+        when that platform has no credentials configured yet (TaskExecutor's
+        existing soft-dependency behavior) — this stays safe to run on a
+        schedule even before any platform account is set up.
+        """
+        results: list[dict[str, Any]] = []
+        if not self.debt_engine.alive:
+            return results
+
+        # __init__ constructs task_executor before _restore_state() may replace
+        # self.wallet with a freshly-restored instance — keep them in sync.
+        self.task_executor.wallet = self.wallet
+
+        # Starting TaskExecutor launches a real headless Chromium process —
+        # non-trivial memory on a free-tier dyno. Skip it entirely until at
+        # least one platform actually has credentials in the vault, so this
+        # scheduled job stays a no-op (no browser, no memory cost) rather than
+        # paying that cost with nothing to log into.
+        vault = self.task_executor._vault
+        has_credentials = vault is not None and any(
+            vault.get_password(p.value) for p in EARNING_PLATFORMS
+        )
+        if not has_credentials:
+            logger.debug("Earning cycle skipped — no platform credentials configured yet")
+            return results
+
+        try:
+            if not self.task_executor._running:
+                await self.task_executor.start()
+
+            threshold = min_certainty(self.wallet.debt)
+            task_results = await self.task_executor.run_earning_cycle(
+                EARNING_PLATFORMS, self.wallet.debt, threshold
+            )
+
+            for result in task_results:
+                self.record_task_outcome(
+                    platform=result.candidate.platform.value,
+                    task_type=result.candidate.task_type.value,
+                    success=result.success,
+                    amount_earned=result.amount_earned,
+                    time_spent_hours=result.time_spent_hours,
+                )
+                entry = {
+                    "task_id": result.task_id,
+                    "platform": result.candidate.platform.value,
+                    "success": result.success,
+                    "amount_earned": str(result.amount_earned),
+                }
+                results.append(entry)
+                self._event_log.append(
+                    f"Task {result.task_id} on {result.candidate.platform.value}: "
+                    f"{'earned $' + str(result.amount_earned) if result.success else result.error}"
+                )
+
+            if results:
+                self.cold_archive.append_event("earning_cycle", {"results": results})
+                self._persist_all()
+                self._broadcast_event("earning_cycle")
+
+            logger.info("Earning cycle complete: %d task(s) attempted", len(results))
+        except Exception:
+            logger.exception("Earning cycle failed")
+
+        return results
 
     def survival_tick(self) -> None:
         """Periodic state-machine sync (runs every minute)."""
@@ -789,12 +878,26 @@ class SurvivalLoop:
         self._scheduler.add_job(
             _trigger_research, "interval", hours=6, id="research_trigger"
         )
+
+        # Earning cycle every 2 h — run async via the event loop, same pattern
+        # as the research trigger above.
+        def _trigger_earning_cycle() -> None:
+            try:
+                loop = asyncio.get_event_loop()
+                asyncio.run_coroutine_threadsafe(self.earning_cycle(), loop)
+            except RuntimeError:
+                logger.warning("No running event loop for earning cycle")
+
+        self._scheduler.add_job(
+            _trigger_earning_cycle, "interval", hours=2, id="earning_cycle"
+        )
         self._scheduler.add_job(
             self.scan_email_for_payment_alerts, "interval", minutes=15, id="email_scan"
         )
         self._scheduler.start()
         logger.info(
-            "Survival loop started — debt tick every 24 h, research every 6 h"
+            "Survival loop started — debt tick every 24 h, research every 6 h, "
+            "earning cycle every 2 h"
         )
 
     def stop(self) -> None:
