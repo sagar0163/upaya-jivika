@@ -555,11 +555,13 @@ class SurvivalLoop:
         the wallet; ``pending``/``failed``/``unknown`` events are recorded for
         the audit trail but do not move money.
         """
-        if self.persistence.is_payment_processed(event.payment_id):
-            logger.info("Payoneer payment %s already processed — skipping", event.payment_id)
-            return {"processed": False, "reason": "duplicate", "payment_id": event.payment_id}
-
         if not event.is_completed:
+            # Non-completed statuses aren't claimed/reserved — they carry no
+            # money and Payoneer may send several for the same payment_id as
+            # its status progresses, so each is just appended to the archive.
+            if self.persistence.is_payment_processed(event.payment_id):
+                logger.info("Payoneer payment %s already processed — skipping", event.payment_id)
+                return {"processed": False, "reason": "duplicate", "payment_id": event.payment_id}
             logger.info(
                 "Payoneer payment %s has status=%s — not crediting yet",
                 event.payment_id,
@@ -570,6 +572,16 @@ class SurvivalLoop:
                 {"payment_id": event.payment_id, "status": event.status.value, "amount": str(event.amount)},
             )
             return {"processed": False, "reason": f"status={event.status.value}", "payment_id": event.payment_id}
+
+        # try_claim_payment is the atomic check-and-reserve: two concurrent
+        # deliveries of the same completed-payment webhook (Payoneer retries,
+        # or a duplicating load balancer) must only let one of them through
+        # to credit_earned — a plain is_payment_processed() check followed by
+        # a later mark_payment_processed() leaves a race window where both
+        # requests pass the check before either marks it processed.
+        if not self.persistence.try_claim_payment(event.payment_id):
+            logger.info("Payoneer payment %s already processed — skipping", event.payment_id)
+            return {"processed": False, "reason": "duplicate", "payment_id": event.payment_id}
 
         breakdown = self.wallet.credit_earned(event.amount)
         self.persistence.mark_payment_processed(

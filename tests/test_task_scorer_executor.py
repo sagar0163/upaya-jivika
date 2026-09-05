@@ -1035,6 +1035,7 @@ class TestTaskExecutor:
         with patch("src.task_executor.CONNECTORS", {Platform.CLICKWORKER: lambda p, c: mock_connector}):
             executor.set_credentials(Platform.CLICKWORKER, {"email": "test", "password": "pass"})
             executor.session_manager.create_context = AsyncMock(return_value=AsyncMock())
+            executor.session_manager.close_context = AsyncMock()
 
             connector = await executor._get_connector(Platform.CLICKWORKER)
 
@@ -1104,6 +1105,7 @@ class TestTaskExecutor:
         with patch("src.task_executor.CONNECTORS", {Platform.CLICKWORKER: lambda p, c: mock_connector}):
             executor.set_credentials(Platform.CLICKWORKER, {"email": "test", "password": "pass"})
             executor.session_manager.create_context = AsyncMock(return_value=AsyncMock())
+            executor.session_manager.close_context = AsyncMock()
 
             connector = await executor._get_connector(Platform.CLICKWORKER)
 

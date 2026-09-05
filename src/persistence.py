@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import Any, Optional
@@ -177,6 +178,20 @@ class PersistenceStore(ABC):
         """Record a Payoneer payment_id as processed, with its raw event data."""
 
     @abstractmethod
+    def try_claim_payment(self, payment_id: str) -> bool:
+        """Atomically reserve ``payment_id`` for processing.
+
+        Returns True the first time this id is claimed, False if it was
+        already claimed (by this call or a concurrent one) — the caller must
+        credit the wallet only on True. This exists because
+        ``is_payment_processed`` + later ``mark_payment_processed`` is a
+        check-then-act race: two concurrent deliveries of the same webhook
+        (Payoneer retries, or a duplicating load balancer) can both pass the
+        check before either marks it processed, double-crediting the wallet.
+        ``try_claim_payment`` closes that window with a single atomic op.
+        """
+
+    @abstractmethod
     def is_platform_blocked(self, platform: str) -> bool:
         """Return True if this platform was permanently blocked (§19).
 
@@ -233,6 +248,7 @@ class InMemoryStore(PersistenceStore):
         self._soul_crystals: list[dict[str, Any]] = []
         self._events: list[str] = []
         self._processed_payments: dict[str, dict[str, Any]] = {}
+        self._payment_lock = threading.Lock()
         self._blocked_platforms: dict[str, dict[str, Any]] = {}
         self._scammed_platforms: dict[str, dict[str, Any]] = {}
         self._pending_spends: dict[str, dict[str, Any]] = {}
@@ -290,6 +306,13 @@ class InMemoryStore(PersistenceStore):
 
     def mark_payment_processed(self, payment_id: str, data: dict[str, Any]) -> None:
         self._processed_payments[payment_id] = dict(data)
+
+    def try_claim_payment(self, payment_id: str) -> bool:
+        with self._payment_lock:
+            if payment_id in self._processed_payments:
+                return False
+            self._processed_payments[payment_id] = {}
+            return True
 
     def is_platform_blocked(self, platform: str) -> bool:
         return platform in self._blocked_platforms
@@ -497,6 +520,21 @@ class SupabaseStore(PersistenceStore):
 
     def mark_payment_processed(self, payment_id: str, data: dict[str, Any]) -> None:
         self._upsert_row("processed_payments", payment_id, data)
+
+    def try_claim_payment(self, payment_id: str) -> bool:
+        # A plain INSERT (not upsert) is the atomic op here: the "id" column
+        # is the primary key, so a concurrent duplicate insert fails with a
+        # unique-violation from Postgres itself rather than racing on a
+        # separate read-then-write round trip in this process.
+        try:
+            self._client.table("processed_payments").insert(
+                {"id": payment_id, "data": {}}
+            ).execute()
+            return True
+        except Exception as e:
+            if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                return False
+            raise
 
     # -- blocked_platforms (§19 permanent bot-block memory) -----------------
 

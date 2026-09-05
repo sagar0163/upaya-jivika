@@ -134,6 +134,7 @@ class TestGetConnectorEscalationReporting:
         with patch("src.task_executor.BrowserSessionManager"):
             executor = TaskExecutor(wallet=_mock_wallet(), bot_tracker=tracker)
             executor.session_manager.create_context = AsyncMock(return_value=AsyncMock())
+            executor.session_manager.close_context = AsyncMock()
 
         executor.set_credentials(Platform.CLICKWORKER, {"email": "e", "password": "p"})
 
@@ -147,6 +148,41 @@ class TestGetConnectorEscalationReporting:
 
         # A failure was recorded for clickworker (attempt count advanced).
         assert tracker.next_tool(Platform.CLICKWORKER.value, BotVendor.NONE) is StealthTool.NODRIVER
+        # The failed login's browser context must not be leaked.
+        executor.session_manager.close_context.assert_awaited_with("clickworker_ctx", persist=False)
+
+    @pytest.mark.asyncio
+    async def test_login_exception_still_closes_context(self):
+        """An exception mid-login (not just a False return) must not leak
+        the browser context either — see src/task_executor.py's leak fix."""
+        from src.task_executor import TaskExecutor
+
+        tracker = BotDetectionTracker(InMemoryStore())
+        mock_connector = AsyncMock()
+        mock_connector.login = AsyncMock(side_effect=RuntimeError("page crashed"))
+
+        class _FakeConnectorClass:
+            LOGIN_URL = "https://x.example/login"
+
+            def __new__(cls, platform, credentials):
+                return mock_connector
+
+        with patch("src.task_executor.BrowserSessionManager"):
+            executor = TaskExecutor(wallet=_mock_wallet(), bot_tracker=tracker)
+            executor.session_manager.create_context = AsyncMock(return_value=AsyncMock())
+            executor.session_manager.close_context = AsyncMock()
+
+        executor.set_credentials(Platform.CLICKWORKER, {"email": "e", "password": "p"})
+
+        with (
+            patch("src.task_executor.CONNECTORS", {Platform.CLICKWORKER: _FakeConnectorClass}),
+            patch("src.task_executor.probe_bot_vendor", AsyncMock(return_value=BotVendor.NONE)),
+            patch("src.task_executor.warm_cookies", AsyncMock(return_value=[])),
+        ):
+            with pytest.raises(RuntimeError):
+                await executor._get_connector(Platform.CLICKWORKER)
+
+        executor.session_manager.close_context.assert_awaited_with("clickworker_ctx", persist=False)
 
     @pytest.mark.asyncio
     async def test_login_success_resets_tracker(self):
@@ -160,6 +196,7 @@ class TestGetConnectorEscalationReporting:
         with patch("src.task_executor.BrowserSessionManager"):
             executor = TaskExecutor(wallet=_mock_wallet(), bot_tracker=tracker)
             executor.session_manager.create_context = AsyncMock(return_value=AsyncMock())
+            executor.session_manager.close_context = AsyncMock()
 
         executor.set_credentials(Platform.CLICKWORKER, {"email": "e", "password": "p"})
 

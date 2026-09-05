@@ -233,6 +233,27 @@ class TestPayoneerWebhookEndpoint:
         assert second.json()["processed"] is False
         assert loop.wallet.total_balance == Decimal("9.00")
 
+    def test_record_payment_uses_atomic_claim_not_check_then_act(self):
+        """record_payment must call try_claim_payment (atomic reserve), not
+        the old is_payment_processed-then-mark_payment_processed pattern —
+        that pairing has a window where two concurrent deliveries of the
+        same completed-payment webhook both pass the check before either
+        marks it processed, double-crediting the wallet. This asserts the
+        call actually happened rather than just the sequential outcome,
+        since a sequential test alone can't distinguish the two designs."""
+        from unittest.mock import MagicMock
+
+        client, loop, store = _client_with_loop()
+        loop.persistence.try_claim_payment = MagicMock(wraps=loop.persistence.try_claim_payment)
+
+        body = json.dumps({"payment_id": "claim_1", "amount": "9.00", "status": "completed"}).encode()
+        sig = _sign(body)
+        headers = {"X-Payoneer-Signature": sig, "Content-Type": "application/json"}
+
+        client.post("/api/webhooks/payoneer", content=body, headers=headers)
+
+        loop.persistence.try_claim_payment.assert_called_once_with("claim_1")
+
     def test_loop_not_initialised_returns_503(self):
         from fastapi.testclient import TestClient
 

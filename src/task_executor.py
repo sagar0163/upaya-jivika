@@ -964,20 +964,31 @@ class TaskExecutor:
         connector_class = CONNECTORS[platform]
 
         ctx_name = f"{platform.value}_ctx"
+        # A prior failed attempt for this platform may have left its context
+        # un-closed if an earlier version of this method raised before
+        # cleanup — close it first so create_context below can't orphan it.
+        await self.session_manager.close_context(ctx_name, persist=False)
         context = await self.session_manager.create_context(ctx_name, persist=True)
 
-        login_url = getattr(connector_class, "LOGIN_URL", None)
-        if self.bot_tracker is not None and login_url is not None:
-            await self._warm_context_for_vendor(platform, login_url, context)
-
-        connector = connector_class(platform, context)
-
-        success = await connector.login(creds)
-        if not success:
+        try:
+            login_url = getattr(connector_class, "LOGIN_URL", None)
             if self.bot_tracker is not None and login_url is not None:
-                vendor = await probe_bot_vendor(login_url)
-                self.bot_tracker.record_failure(platform.value, vendor, reason="login failed")
-            raise ExecutionError(f"Login failed for {platform}")
+                await self._warm_context_for_vendor(platform, login_url, context)
+
+            connector = connector_class(platform, context)
+
+            success = await connector.login(creds)
+            if not success:
+                if self.bot_tracker is not None and login_url is not None:
+                    vendor = await probe_bot_vendor(login_url)
+                    self.bot_tracker.record_failure(platform.value, vendor, reason="login failed")
+                raise ExecutionError(f"Login failed for {platform}")
+        except BaseException:
+            # Never leak the browser context on a failed/erroring login —
+            # each failure would otherwise hold one Chromium context open
+            # until process restart, exhausting memory on Render's free tier.
+            await self.session_manager.close_context(ctx_name, persist=False)
+            raise
 
         if self.bot_tracker is not None:
             self.bot_tracker.record_success(platform.value)

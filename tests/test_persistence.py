@@ -356,6 +356,39 @@ class TestProcessedPayments:
         store.mark_payment_processed("p1", {"amount": "2.00"})
         assert store.is_payment_processed("p2") is False
 
+    def test_try_claim_payment_only_first_call_succeeds(self, store):
+        assert store.try_claim_payment("p1") is True
+        assert store.try_claim_payment("p1") is False
+        assert store.try_claim_payment("p1") is False
+
+    def test_try_claim_payment_distinct_ids_independent(self, store):
+        assert store.try_claim_payment("p1") is True
+        assert store.try_claim_payment("p2") is True
+
+    def test_try_claim_payment_is_race_safe_across_threads(self, store):
+        """The atomic guarantee try_claim_payment exists to provide: of N
+        threads racing on the same payment_id, exactly one gets True."""
+        import threading
+
+        results: list[bool] = []
+        lock = threading.Lock()
+        barrier = threading.Barrier(20)
+
+        def _claim():
+            barrier.wait()
+            result = store.try_claim_payment("race_pay")
+            with lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=_claim) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert results.count(True) == 1
+        assert results.count(False) == 19
+
 
 class TestBlockedPlatforms:
     @pytest.fixture
