@@ -469,6 +469,28 @@
   <div class="rebirth-flash" id="rebirthFlash"></div>
 
   <script>
+    // ---- API auth (write endpoints require a bearer token — see src/api_auth.py) ----
+    function getApiToken() {
+      let token = localStorage.getItem('uj_api_token');
+      if (!token) {
+        token = window.prompt('Enter the dashboard API token (set as API_AUTH_TOKEN on the server):');
+        if (token) localStorage.setItem('uj_api_token', token);
+      }
+      return token;
+    }
+
+    async function authedFetch(url, options = {}) {
+      const token = getApiToken();
+      const headers = Object.assign({}, options.headers, {
+        Authorization: 'Bearer ' + (token || ''),
+      });
+      const resp = await fetch(url, Object.assign({}, options, { headers }));
+      if (resp.status === 401 || resp.status === 403) {
+        localStorage.removeItem('uj_api_token');
+      }
+      return resp;
+    }
+
     // ---- State ----
     const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws';
     let ws = null;
@@ -744,7 +766,7 @@
       withdrawStatus.textContent = 'Processing…';
       withdrawStatus.className = 'withdraw-status';
       try {
-        const resp = await fetch('/api/withdraw', {
+        const resp = await authedFetch('/api/withdraw', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ pool, amount }),
@@ -812,7 +834,7 @@
         btn.addEventListener('click', async () => {
           btn.disabled = true;
           try {
-            await fetch(`/api/spend/${btn.dataset.id}/reject`, { method: 'POST' });
+            await authedFetch(`/api/spend/${btn.dataset.id}/reject`, { method: 'POST' });
           } finally {
             refreshPendingSpends();
           }

@@ -126,7 +126,10 @@ class TestSpendEndpoints:
         loop.wallet = Wallet(free=Decimal("100.00"))
         result = loop.request_ai_spend(Decimal("5.00"), Decimal("0.97"), "reason")
 
-        resp = client.post(f"/api/spend/{result['spend_id']}/reject")
+        resp = client.post(
+            f"/api/spend/{result['spend_id']}/reject",
+            headers={"Authorization": "Bearer test-token"},
+        )
 
         assert resp.status_code == 200
         assert resp.json()["rejected"] is True
@@ -134,7 +137,10 @@ class TestSpendEndpoints:
     def test_reject_endpoint_404_for_unknown_id(self):
         client, _loop, _store = _client_with_loop()
 
-        resp = client.post("/api/spend/nonexistent/reject")
+        resp = client.post(
+            "/api/spend/nonexistent/reject",
+            headers={"Authorization": "Bearer test-token"},
+        )
 
         assert resp.status_code == 404
 

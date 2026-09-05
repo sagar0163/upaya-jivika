@@ -49,7 +49,11 @@ class TestWithdrawEndpoint:
         client, loop, _store = _client_with_loop()
         loop.wallet = Wallet(free=Decimal("20.00"))
 
-        resp = client.post("/api/withdraw", json={"pool": "free", "amount": "5.00"})
+        resp = client.post(
+            "/api/withdraw",
+            json={"pool": "free", "amount": "5.00"},
+            headers={"Authorization": "Bearer test-token"},
+        )
 
         assert resp.status_code == 200
         body = resp.json()
@@ -62,7 +66,11 @@ class TestWithdrawEndpoint:
         client, loop, _store = _client_with_loop()
         loop.wallet = Wallet(locked=Decimal("20.00"))
 
-        resp = client.post("/api/withdraw", json={"pool": "locked", "amount": "5.00"})
+        resp = client.post(
+            "/api/withdraw",
+            json={"pool": "locked", "amount": "5.00"},
+            headers={"Authorization": "Bearer test-token"},
+        )
 
         assert resp.status_code == 200
         assert loop.wallet.locked == Decimal("15.00")
@@ -72,7 +80,11 @@ class TestWithdrawEndpoint:
         client, loop, _store = _client_with_loop()
         loop.wallet = Wallet(free=Decimal("2.00"))
 
-        resp = client.post("/api/withdraw", json={"pool": "free", "amount": "5.00"})
+        resp = client.post(
+            "/api/withdraw",
+            json={"pool": "free", "amount": "5.00"},
+            headers={"Authorization": "Bearer test-token"},
+        )
 
         assert resp.status_code == 400
 
@@ -81,7 +93,11 @@ class TestWithdrawEndpoint:
         client, loop, _store = _client_with_loop()
         loop.wallet = Wallet(free=Decimal("20.00"))
 
-        resp = client.post("/api/withdraw", json={"pool": "free", "amount": "-5.00"})
+        resp = client.post(
+            "/api/withdraw",
+            json={"pool": "free", "amount": "-5.00"},
+            headers={"Authorization": "Bearer test-token"},
+        )
 
         assert resp.status_code == 400
 
@@ -89,7 +105,11 @@ class TestWithdrawEndpoint:
         monkeypatch.delenv("PAYONEER_API_KEY", raising=False)
         client, _loop, _store = _client_with_loop()
 
-        resp = client.post("/api/withdraw", json={"pool": "vault", "amount": "5.00"})
+        resp = client.post(
+            "/api/withdraw",
+            json={"pool": "vault", "amount": "5.00"},
+            headers={"Authorization": "Bearer test-token"},
+        )
 
         assert resp.status_code == 400
 
@@ -97,7 +117,11 @@ class TestWithdrawEndpoint:
         monkeypatch.delenv("PAYONEER_API_KEY", raising=False)
         client, _loop, _store = _client_with_loop()
 
-        resp = client.post("/api/withdraw", json={"pool": "free"})
+        resp = client.post(
+            "/api/withdraw",
+            json={"pool": "free"},
+            headers={"Authorization": "Bearer test-token"},
+        )
 
         assert resp.status_code == 400
 
@@ -108,7 +132,7 @@ class TestWithdrawEndpoint:
         resp = client.post(
             "/api/withdraw",
             content=b"not json",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Authorization": "Bearer test-token"},
         )
 
         assert resp.status_code == 400
@@ -121,6 +145,10 @@ class TestWithdrawEndpoint:
         main_mod._loop = None
         client = TestClient(main_mod.app)
 
-        resp = client.post("/api/withdraw", json={"pool": "free", "amount": "5.00"})
+        resp = client.post(
+            "/api/withdraw",
+            json={"pool": "free", "amount": "5.00"},
+            headers={"Authorization": "Bearer test-token"},
+        )
 
         assert resp.status_code == 503

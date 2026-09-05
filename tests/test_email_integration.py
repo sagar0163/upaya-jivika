@@ -93,7 +93,7 @@ class TestEmailEndpoints:
         mock_inbox.fetch_unread.return_value = [alert]
         loop.email_inbox = mock_inbox
 
-        resp = client.post("/api/email/scan")
+        resp = client.post("/api/email/scan", headers={"Authorization": "Bearer test-token"})
 
         assert resp.status_code == 200
         assert resp.json()["alerts_found"] == [{"sender": "alerts@payoneer.com", "subject": "Payout sent"}]
@@ -116,6 +116,6 @@ class TestEmailEndpoints:
         from fastapi.testclient import TestClient
 
         client = TestClient(main_mod.app)
-        resp = client.post("/api/email/scan")
+        resp = client.post("/api/email/scan", headers={"Authorization": "Bearer test-token"})
 
         assert resp.status_code == 503

@@ -19,11 +19,12 @@ from pathlib import Path
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from src.alert_system import AlertLevel, AlertSystem
 from src.ancestral_memory import AncestralMemory, load_ancestral_memory
+from src.api_auth import require_api_token
 from src.approval_gate import ApprovalGate, SpendDecision
 from src.cold_archive import ColdArchive
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
@@ -869,7 +870,7 @@ async def websocket_endpoint(websocket: WebSocket):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/api/debt/tick")
+@app.post("/api/debt/tick", dependencies=[Depends(require_api_token)])
 async def debt_tick_endpoint():
     """Fire a single debt tick. Idempotent - safe to call multiple times.
     
@@ -904,7 +905,7 @@ async def debt_tick_endpoint():
     }
 
 
-@app.post("/api/research/trigger")
+@app.post("/api/research/trigger", dependencies=[Depends(require_api_token)])
 async def research_trigger_endpoint():
     """Trigger a research cycle.
     
@@ -970,7 +971,7 @@ async def email_status_endpoint():
     return {"configured": loop.email_inbox.is_configured}
 
 
-@app.post("/api/email/scan")
+@app.post("/api/email/scan", dependencies=[Depends(require_api_token)])
 async def email_scan_endpoint():
     """Manually trigger a payment-alert email scan (also runs every 15 min)."""
     loop = _loop
@@ -988,7 +989,7 @@ async def pending_spends_endpoint():
     return {"pending": [p.to_dict() for p in loop.approval_gate.list_pending()]}
 
 
-@app.post("/api/spend/{spend_id}/reject")
+@app.post("/api/spend/{spend_id}/reject", dependencies=[Depends(require_api_token)])
 async def reject_spend_endpoint(spend_id: str):
     """User vetoes a pending AI spend before its window elapses."""
     loop = _loop
@@ -1000,7 +1001,7 @@ async def reject_spend_endpoint(spend_id: str):
     return {"rejected": True, "spend_id": spend_id}
 
 
-@app.post("/api/withdraw")
+@app.post("/api/withdraw", dependencies=[Depends(require_api_token)])
 async def withdraw_endpoint(request: Request):
     """User-initiated withdrawal from a wallet pool to a real bank account.
 

@@ -442,7 +442,7 @@ dashboard.py         — Rich terminal UI, live status
 | ✅ | Alert system | **SOLVED**: `src/alert_system.py` pluggable notifiers (default logging) fire once on entering danger states & on death |
 | ✅ | Task timeout | **SOLVED** — `asyncio.wait_for` cap in `TaskExecutor.execute_task` (default 300s); excess → failed result, $0 credit |
 | 🟡 | Scam handling | §20 legitimacy scoring/payment-window tracking/blacklist/wallet-reversal built and unit-tested — but **nothing in the autonomous loop calls any of it yet**: `research_loop.py` never calls `score_legitimacy` before a platform is joined, and nothing calls `ScamTracker.register_task` or checks `overdue_tasks`/`grace_exceeded_tasks` on a schedule. `SurvivalLoop.record_scam` only fires if invoked directly (e.g. manually or from a future connector). Net effect: today the agent has no autonomous scam protection in production, despite the detection logic existing and passing tests |
-| 🔴 | API authentication | **Gap** — `/api/withdraw`, `/api/spend/pending`, `/api/spend/{id}/reject`, and every other state-changing endpoint except `/api/webhooks/payoneer` (HMAC-verified) have **no authentication at all**. Since the dashboard is intentionally public (§1, §18), anyone who finds the Render URL can trigger a withdrawal or veto every pending AI spend, silently defeating the human-approval gate this session just built. Needs an API key / bearer token check on every mutating endpoint before this goes further |
+| ✅ | API authentication | **SOLVED** — `src/api_auth.py` (`require_api_token`): every mutating endpoint (`/api/withdraw`, `/api/spend/{id}/reject`, `/api/debt/tick`, `/api/research/trigger`, `/api/email/scan`) now requires `Authorization: Bearer <API_AUTH_TOKEN>`; fails closed (503) if the token isn't configured, same pattern as the Payoneer webhook. Read-only endpoints (dashboard, `/api/spend/pending`, `/health`) stay public by design. The dashboard's own withdraw/veto controls prompt for the token once (via `authedFetch` in `static/index.html`) and cache it in that browser's `localStorage` — it never appears in the page source |
 
 ---
 
@@ -552,6 +552,7 @@ services:
 | `SUPABASE_URL` + `SUPABASE_KEY` | ✓ | ✓ | Used by everything |
 | All AI API keys | ✓ | ✓ | brain_router + cron jobs |
 | `PAYONEER_WEBHOOK_SECRET` | ✓ | — | FastAPI webhook only |
+| `API_AUTH_TOKEN` | ✓ | — | Gates every mutating endpoint (`src/api_auth.py`) — withdraw, spend veto, manual debt/research triggers |
 | `GITHUB_TOKEN` | — | ✓ built-in | diary_writer |
 | `HF_TOKEN` | ✓ | ✓ | hf_sync + cold_archive (Layer 3) |
 | Platform credentials | ✓ via vault | — | `credentials` table in Supabase via `src/vault.py` (auto-created, keyed by provider + key) |
