@@ -211,12 +211,18 @@ def _nodriver_cookies_to_playwright(cookies: list[Any]) -> list[CookieDict]:
     return out
 
 
-def _find_playwright_chromium() -> str | None:
+def _find_playwright_chromium_sync() -> str | None:
     """Locate the Chromium binary Playwright already downloaded.
 
     nodriver drives Chrome/Chromium directly and needs a real executable
     path; reusing Playwright's copy avoids a second browser download in the
     Render build (``playwright install chromium`` already fetches one).
+
+    Uses Playwright's *synchronous* API, which starts a Node.js driver
+    subprocess and blocks on real I/O while it does — callers on the async
+    event loop must run this via ``asyncio.to_thread``, never call it
+    directly, or the whole loop (FastAPI requests, scheduler jobs) stalls
+    for the duration.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -238,7 +244,7 @@ async def warm_with_nodriver(url: str, wait_seconds: float = 8.0) -> list[Cookie
     """
     import nodriver  # type: ignore[import-untyped]
 
-    executable_path = _find_playwright_chromium()
+    executable_path = await asyncio.to_thread(_find_playwright_chromium_sync)
     browser = await nodriver.start(
         headless=True,
         sandbox=False,
