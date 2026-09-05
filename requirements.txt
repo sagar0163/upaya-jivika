@@ -13,6 +13,15 @@ supabase>=2.10.0
 playwright>=1.45.0
 playwright-stealth>=2.0.3
 
+# §19 CAPTCHA/bot-detection escalation ladder — nodriver drives Chrome
+# directly over CDP (bypasses navigator.webdriver/CDP-detection checks that
+# flag Playwright), Camoufox is a patched Firefox exposed through a real
+# Playwright-compatible API, 2captcha-python solves interstitial CAPTCHAs
+# via the paid 2Captcha API (import name: twocaptcha).
+nodriver>=0.36
+camoufox>=0.4.11
+2captcha-python>=1.2.5
+
 # GitHub & HuggingFace
 PyGithub>=2.4.0
 huggingface_hub>=0.24.0

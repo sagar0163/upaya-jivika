@@ -24,15 +24,22 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 if TYPE_CHECKING:
     from src.guardrails import EthicalGuardrail
 
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
 from src.audit_trail import AuditTrail
-from src.captcha_handler import BotDetectionTracker, PlatformBlockError
+from src.captcha_handler import (
+    BotDetectionTracker,
+    BotVendor,
+    PlatformBlockError,
+    StealthTool,
+    probe_bot_vendor,
+    warm_cookies,
+)
 from src.guardrails import get_guardrail
 from src.scam_detection import PaymentWindow, PlatformScammedError, PlatformType, ScamTracker
 from src.state_machine import resolve_state
@@ -136,9 +143,9 @@ class PlatformConnector(ABC):
     async def _detect_bot_check(self) -> bool:
         """Detect a CAPTCHA / 2FA interstitial on the current page.
 
-        We never attempt to solve CAPTCHAs — per artifact.md §6 automation is
-        only allowed on ToS-safe platforms. This just surfaces the condition
-        so callers can pause or bail out instead of hammering the site.
+        A 2FA form has no §19 answer — this just surfaces it so the caller
+        bails out. A CAPTCHA widget does have one: callers should try
+        :meth:`_attempt_captcha_solve` before giving up.
         """
         if not self.page:
             return False
@@ -169,6 +176,66 @@ class PlatformConnector(ABC):
                 return True
         except Exception:
             pass
+        return False
+
+    async def _attempt_captcha_solve(self) -> bool:
+        """Solve an inline reCAPTCHA/hCaptcha widget on the current page via
+        2Captcha and inject the response token (§19 paid-solver rung).
+
+        Returns True if a token was found and injected — the caller should
+        then retry its normal submit flow, since the token is validated
+        server-side on submit, not merely by its presence in the DOM.
+        Returns False for no widget found, no sitekey, solving failed, or
+        ``TWOCAPTCHA_API_KEY`` not configured — all of which mean "give up",
+        not "retry".
+        """
+        if not self.page:
+            return False
+
+        from src.captcha_handler import CaptchaSolveError, solve_hcaptcha, solve_recaptcha_v2
+
+        for marker, solve, response_selectors in (
+            (
+                "iframe[src*='recaptcha']",
+                solve_recaptcha_v2,
+                ("#g-recaptcha-response", "[name='g-recaptcha-response']"),
+            ),
+            (
+                "iframe[src*='hcaptcha']",
+                solve_hcaptcha,
+                ("[name='h-captcha-response']", "[name='g-recaptcha-response']"),
+            ),
+        ):
+            try:
+                if await self.page.locator(marker).count() == 0:
+                    continue
+                sitekey = await self.page.locator("[data-sitekey]").first.get_attribute(
+                    "data-sitekey"
+                )
+                if not sitekey:
+                    continue
+                token = await solve(sitekey, self.page.url)
+                injected = False
+                for sel in response_selectors:
+                    try:
+                        await self.page.evaluate(
+                            "([sel, tok]) => { const el = document.querySelector(sel); "
+                            "if (el) { el.value = tok; el.innerHTML = tok; } }",
+                            [sel, token],
+                        )
+                        injected = True
+                    except Exception:
+                        continue
+                if injected:
+                    logger.info(
+                        "%s: solved %s via 2Captcha", self.platform.value, marker
+                    )
+                    return True
+            except CaptchaSolveError as e:
+                logger.warning(f"{self.platform.value}: 2Captcha solve failed: {e}")
+            except Exception as e:
+                logger.warning(f"{self.platform.value}: CAPTCHA solve attempt errored: {e}")
+
         return False
 
     async def _safe_click(self, selector: str, timeout: int = 5000) -> bool:
@@ -263,8 +330,8 @@ class ClickworkerConnector(PlatformConnector):
         try:
             await page.goto(self.LOGIN_URL, wait_until="domcontentloaded")
             await asyncio.sleep(1.0)  # human-pace page settle
-            if await self._detect_bot_check():
-                logger.info("Clickworker CAPTCHA/2FA present — awaiting manual")
+            if await self._detect_bot_check() and not await self._attempt_captcha_solve():
+                logger.info("Clickworker CAPTCHA/2FA present — could not solve, awaiting manual")
                 return False
             await self._safe_fill(self.SEL_EMAIL, credentials.get("email", ""))
             await self._safe_fill(self.SEL_PASSWORD, credentials.get("password", ""))
@@ -454,6 +521,9 @@ class TolokaConnector(PlatformConnector):
         page = await self._new_page()
         try:
             await page.goto(self.LOGIN_URL, wait_until="networkidle")
+            if await self._detect_bot_check() and not await self._attempt_captcha_solve():
+                logger.info("Toloka CAPTCHA/2FA present — could not solve, awaiting manual")
+                return False
             await self._safe_fill('input[type="email"]', credentials.get("email", ""))
             await self._safe_fill('input[type="password"]', credentials.get("password", ""))
             await self._safe_click('button[type="submit"]')
@@ -550,6 +620,9 @@ class ProlificConnector(PlatformConnector):
         page = await self._new_page()
         try:
             await page.goto(self.LOGIN_URL, wait_until="networkidle")
+            if await self._detect_bot_check() and not await self._attempt_captcha_solve():
+                logger.info("Prolific CAPTCHA/2FA present — could not solve, awaiting manual")
+                return False
             await self._safe_fill('input[name="email"]', credentials.get("email", ""))
             await self._safe_fill('input[name="password"]', credentials.get("password", ""))
             await self._safe_click('button[type="submit"]')
@@ -641,7 +714,7 @@ class BrowserSessionManager:
     def __init__(self, headless: bool = True, storage_dir: Optional[str] = None):
         self.headless = headless
         self.storage_dir = Path(storage_dir or _DEFAULT_SESSION_DIR)
-        self._playwright = None
+        self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
         self._contexts: dict[str, BrowserContext] = {}
         try:
@@ -888,18 +961,62 @@ class TaskExecutor:
         if creds is None:
             raise ExecutionError(f"No credentials for platform: {platform}")
 
+        connector_class = CONNECTORS[platform]
+
         ctx_name = f"{platform.value}_ctx"
         context = await self.session_manager.create_context(ctx_name, persist=True)
-        connector_class = CONNECTORS[platform]
+
+        login_url = getattr(connector_class, "LOGIN_URL", None)
+        if self.bot_tracker is not None and login_url is not None:
+            await self._warm_context_for_vendor(platform, login_url, context)
+
         connector = connector_class(platform, context)
 
         success = await connector.login(creds)
         if not success:
+            if self.bot_tracker is not None and login_url is not None:
+                vendor = await probe_bot_vendor(login_url)
+                self.bot_tracker.record_failure(platform.value, vendor, reason="login failed")
             raise ExecutionError(f"Login failed for {platform}")
+
+        if self.bot_tracker is not None:
+            self.bot_tracker.record_success(platform.value)
 
         self._connectors[platform] = connector
         self._active_sessions.add(ctx_name)
         return connector
+
+    async def _warm_context_for_vendor(
+        self, platform: Platform, login_url: str, context: BrowserContext
+    ) -> None:
+        """Probe ``login_url`` for a known anti-bot vendor and, if the §19
+        ladder's next recommended tool is a cookie warmer (nodriver/Camoufox),
+        pre-load ``context`` with cookies from a session that already cleared
+        it. A no-op for NONE vendor or when the next tool is stealth-only/
+        exhausted — those cases need no pre-warming.
+        """
+        assert self.bot_tracker is not None
+        vendor = await probe_bot_vendor(login_url)
+        if vendor is BotVendor.NONE:
+            return
+
+        tool = self.bot_tracker.next_tool(platform.value, vendor)
+        if tool not in (StealthTool.NODRIVER, StealthTool.CAMOUFOX):
+            return
+
+        try:
+            cookies = await warm_cookies(tool, login_url)
+            if cookies:
+                await context.add_cookies(cast(Any, cookies))
+                logger.info(
+                    "%s: warmed %d cookie(s) via %s for vendor=%s",
+                    platform.value, len(cookies), tool.value, vendor.value,
+                )
+        except Exception:
+            logger.exception(
+                "%s: cookie warming via %s failed — proceeding without it",
+                platform.value, tool.value,
+            )
 
     async def discover_tasks(self, platforms: list[Platform]) -> list[TaskCandidate]:
         """Discover tasks from multiple platforms."""

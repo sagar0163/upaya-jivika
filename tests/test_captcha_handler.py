@@ -1,18 +1,28 @@
 """Tests for src/captcha_handler.py — bot-detection strategy (artifact.md §19)."""
 
 import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from src.captcha_handler import (
+    TOOL_IMPLEMENTED,
     BotDetectionTracker,
     BotVendor,
+    CaptchaSolveError,
     PlatformBlockError,
     StealthTool,
+    _nodriver_cookies_to_playwright,
     detect_bot_vendor,
     human_delay,
     human_type,
+    probe_bot_vendor,
     recommend_tool,
+    solve_hcaptcha,
+    solve_recaptcha_v2,
+    twocaptcha_api_key,
+    warm_cookies,
 )
 from src.persistence import InMemoryStore
 
@@ -174,3 +184,165 @@ class TestBotDetectionTracker:
         tracker = BotDetectionTracker(InMemoryStore())
         tracker.record_failure("platform_a", BotVendor.CLOUDFLARE)
         assert tracker.next_tool("platform_b", BotVendor.CLOUDFLARE) is StealthTool.PLAYWRIGHT_STEALTH
+
+
+class TestToolImplemented:
+    def test_all_ladder_tools_marked_implemented(self):
+        """§19 upgrade: nodriver/Camoufox/2Captcha are real now, not stubs."""
+        assert TOOL_IMPLEMENTED[StealthTool.NODRIVER] is True
+        assert TOOL_IMPLEMENTED[StealthTool.CAMOUFOX] is True
+        assert TOOL_IMPLEMENTED[StealthTool.PAID_CAPTCHA_SOLVER] is True
+
+
+class TestTwocaptchaApiKey:
+    def test_returns_none_when_unset(self, monkeypatch):
+        monkeypatch.delenv("TWOCAPTCHA_API_KEY", raising=False)
+        assert twocaptcha_api_key() is None
+
+    def test_returns_value_when_set(self, monkeypatch):
+        monkeypatch.setenv("TWOCAPTCHA_API_KEY", "abc123")
+        assert twocaptcha_api_key() == "abc123"
+
+    def test_empty_string_treated_as_unset(self, monkeypatch):
+        monkeypatch.setenv("TWOCAPTCHA_API_KEY", "")
+        assert twocaptcha_api_key() is None
+
+
+class TestProbeBotVendor:
+    @pytest.mark.asyncio
+    async def test_classifies_cloudflare_response(self):
+        request = httpx.Request("GET", "https://example.com")
+        response = httpx.Response(200, headers={"CF-RAY": "abc"}, request=request)
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=response)):
+            vendor = await probe_bot_vendor("https://example.com")
+        assert vendor is BotVendor.CLOUDFLARE
+
+    @pytest.mark.asyncio
+    async def test_classifies_clean_response_as_none(self):
+        request = httpx.Request("GET", "https://example.com")
+        response = httpx.Response(200, headers={}, request=request)
+        with patch("httpx.AsyncClient.get", AsyncMock(return_value=response)):
+            vendor = await probe_bot_vendor("https://example.com")
+        assert vendor is BotVendor.NONE
+
+    @pytest.mark.asyncio
+    async def test_network_failure_is_treated_as_none_not_raised(self):
+        with patch("httpx.AsyncClient.get", AsyncMock(side_effect=httpx.ConnectError("down"))):
+            vendor = await probe_bot_vendor("https://unreachable.example")
+        assert vendor is BotVendor.NONE
+
+
+class _FakeCookie:
+    def __init__(self, **kwargs):
+        self.name = kwargs.get("name", "sid")
+        self.value = kwargs.get("value", "abc")
+        self.domain = kwargs.get("domain", ".example.com")
+        self.path = kwargs.get("path", "/")
+        self.http_only = kwargs.get("http_only", True)
+        self.secure = kwargs.get("secure", True)
+        self.expires = kwargs.get("expires", 0)
+        self.same_site = kwargs.get("same_site", None)
+
+
+class TestNodriverCookieConversion:
+    def test_converts_basic_fields(self):
+        cookies = _nodriver_cookies_to_playwright([_FakeCookie()])
+        assert cookies == [{
+            "name": "sid",
+            "value": "abc",
+            "domain": ".example.com",
+            "path": "/",
+            "httpOnly": True,
+            "secure": True,
+        }]
+
+    def test_includes_expires_when_positive(self):
+        cookies = _nodriver_cookies_to_playwright([_FakeCookie(expires=123456.0)])
+        assert cookies[0]["expires"] == 123456.0
+
+    def test_omits_expires_when_zero(self):
+        cookies = _nodriver_cookies_to_playwright([_FakeCookie(expires=0)])
+        assert "expires" not in cookies[0]
+
+    def test_includes_valid_same_site(self):
+        cookies = _nodriver_cookies_to_playwright([_FakeCookie(same_site="Lax")])
+        assert cookies[0]["sameSite"] == "Lax"
+
+    def test_omits_invalid_same_site(self):
+        cookies = _nodriver_cookies_to_playwright([_FakeCookie(same_site="Bogus")])
+        assert "sameSite" not in cookies[0]
+
+    def test_empty_path_defaults_to_slash(self):
+        cookies = _nodriver_cookies_to_playwright([_FakeCookie(path="")])
+        assert cookies[0]["path"] == "/"
+
+
+class TestWarmCookies:
+    @pytest.mark.asyncio
+    async def test_dispatches_to_nodriver(self):
+        with patch(
+            "src.captcha_handler.warm_with_nodriver", AsyncMock(return_value=[{"name": "a"}])
+        ) as mock_warm:
+            cookies = await warm_cookies(StealthTool.NODRIVER, "https://x.example")
+        mock_warm.assert_awaited_once_with("https://x.example")
+        assert cookies == [{"name": "a"}]
+
+    @pytest.mark.asyncio
+    async def test_dispatches_to_camoufox(self):
+        with patch(
+            "src.captcha_handler.warm_with_camoufox", AsyncMock(return_value=[{"name": "b"}])
+        ) as mock_warm:
+            cookies = await warm_cookies(StealthTool.CAMOUFOX, "https://x.example")
+        mock_warm.assert_awaited_once_with("https://x.example")
+        assert cookies == [{"name": "b"}]
+
+    @pytest.mark.asyncio
+    async def test_raises_for_non_warmer_tool(self):
+        with pytest.raises(ValueError):
+            await warm_cookies(StealthTool.PLAYWRIGHT_STEALTH, "https://x.example")
+
+
+class TestSolveRecaptchaV2:
+    @pytest.mark.asyncio
+    async def test_raises_when_no_api_key(self, monkeypatch):
+        monkeypatch.delenv("TWOCAPTCHA_API_KEY", raising=False)
+        with pytest.raises(CaptchaSolveError, match="not configured"):
+            await solve_recaptcha_v2("sitekey", "https://x.example")
+
+    @pytest.mark.asyncio
+    async def test_returns_token_on_success(self, monkeypatch):
+        monkeypatch.setenv("TWOCAPTCHA_API_KEY", "key123")
+        mock_solver = MagicMock()
+        mock_solver.recaptcha.return_value = {"code": "solved-token"}
+        with patch("twocaptcha.TwoCaptcha", return_value=mock_solver):
+            token = await solve_recaptcha_v2("sitekey", "https://x.example")
+        assert token == "solved-token"
+        mock_solver.recaptcha.assert_called_once_with(sitekey="sitekey", url="https://x.example")
+
+    @pytest.mark.asyncio
+    async def test_wraps_api_exception(self, monkeypatch):
+        from twocaptcha import ApiException
+
+        monkeypatch.setenv("TWOCAPTCHA_API_KEY", "key123")
+        mock_solver = MagicMock()
+        mock_solver.recaptcha.side_effect = ApiException("ERROR_ZERO_BALANCE")
+        with patch("twocaptcha.TwoCaptcha", return_value=mock_solver):
+            with pytest.raises(CaptchaSolveError):
+                await solve_recaptcha_v2("sitekey", "https://x.example")
+
+
+class TestSolveHcaptcha:
+    @pytest.mark.asyncio
+    async def test_raises_when_no_api_key(self, monkeypatch):
+        monkeypatch.delenv("TWOCAPTCHA_API_KEY", raising=False)
+        with pytest.raises(CaptchaSolveError, match="not configured"):
+            await solve_hcaptcha("sitekey", "https://x.example")
+
+    @pytest.mark.asyncio
+    async def test_returns_token_on_success(self, monkeypatch):
+        monkeypatch.setenv("TWOCAPTCHA_API_KEY", "key123")
+        mock_solver = MagicMock()
+        mock_solver.hcaptcha.return_value = {"code": "hc-token"}
+        with patch("twocaptcha.TwoCaptcha", return_value=mock_solver):
+            token = await solve_hcaptcha("sitekey", "https://x.example")
+        assert token == "hc-token"

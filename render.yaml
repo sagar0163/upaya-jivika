@@ -2,7 +2,7 @@ services:
   - type: web
     name: survival-ai
     env: python
-    buildCommand: pip install -r requirements.txt && playwright install chromium
+    buildCommand: pip install -r requirements.txt && playwright install chromium && python -m camoufox fetch
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: SUPABASE_URL
@@ -14,4 +14,9 @@ services:
       - key: NVIDIA_API_KEY
         sync: false
       - key: HF_TOKEN
+        sync: false
+      # §19 paid CAPTCHA-solving fallback (2captcha.com) — soft-configured,
+      # same pattern as the other optional secrets: the ladder just stops one
+      # rung earlier (GIVE_UP) when this isn't set.
+      - key: TWOCAPTCHA_API_KEY
         sync: false

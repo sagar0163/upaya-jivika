@@ -16,26 +16,39 @@ live browser:
   agent never wastes debt-time retrying a dead end, across restarts and
   across lives.
 
-What this module deliberately does *not* do: it does not implement nodriver
-or Camoufox integration (those are separate browser engines with their own
-async APIs, incompatible with the Playwright-based connectors already in
-``task_executor.py`` — swapping engines is a larger, separate effort) or a
-paid 2captcha fallback. ``playwright-stealth`` *is* wired in
-(``task_executor.BrowserSessionManager``) since it patches an existing
-Playwright context/page rather than requiring a different engine. Treat the
-escalation ladder below as reflecting that: only the free, already-integrated
-tool is offered; the harder tools raise :class:`NotImplementedError` markers
-in :data:`TOOL_IMPLEMENTED` so callers can detect "designed but not wired"
-without guessing.
+- **nodriver cookie-warming** — nodriver drives Chrome directly over the CDP
+  protocol rather than through Playwright's injected automation bindings,
+  which is what lets it clear checks (``navigator.webdriver``, CDP-detection
+  probes) that flag a regular Playwright session. It is used purely as a
+  cookie warmer: visit the gated URL with nodriver until a challenge clears,
+  export the resulting session cookies, then hand them to the existing
+  Playwright context via ``add_cookies`` so the rest of a connector's
+  selector/typing logic keeps running on the one already-built engine
+  instead of duplicating it for a second one.
+- **Camoufox** — a patched-Firefox engine exposed through a genuine
+  Playwright-compatible API (``AsyncCamoufox`` yields a real
+  ``playwright.async_api.Browser``), used the same cookie-warming way as
+  nodriver for vendors nodriver alone doesn't clear.
+- **2Captcha paid solving** — for an inline reCAPTCHA/hCaptcha widget that
+  survives stealth, ``solve_recaptcha_v2``/``solve_hcaptcha`` submit the
+  sitekey to the 2Captcha API and return the response token to inject into
+  the page. Soft-configured via ``TWOCAPTCHA_API_KEY`` — absent means this
+  rung is skipped, same fail-soft pattern as the rest of the codebase's
+  optional secrets.
+
+Kasada has no ladder entry (artifact.md §19: "hardest — research
+alternative") — none of the above reliably clears it, so a Kasada-fronted
+platform still just gets blocklisted.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +89,27 @@ def detect_bot_vendor(headers: dict[str, str], status_code: int = 200) -> BotVen
     return BotVendor.NONE
 
 
+async def probe_bot_vendor(url: str, *, timeout: float = 10.0) -> BotVendor:
+    """Plain (non-browser) GET against ``url``, classified via :func:`detect_bot_vendor`.
+
+    Run before spending a browser context/login attempt on a platform, so
+    the escalation ladder can pick the right tool up front instead of
+    discovering the vendor only after Playwright's own attempt fails. A
+    network failure classifies as :attr:`BotVendor.NONE` — probing is a
+    cheap optimization, not a security boundary, so a probe error should
+    never block the real (browser-based) attempt from proceeding.
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
+            response = await client.get(url)
+        return detect_bot_vendor(dict(response.headers), response.status_code)
+    except Exception:
+        logger.warning("Bot-vendor probe failed for %s", url, exc_info=True)
+        return BotVendor.NONE
+
+
 # ---------------------------------------------------------------------------
 # Escalation ladder
 # ---------------------------------------------------------------------------
@@ -90,17 +124,23 @@ class StealthTool(str, Enum):
     GIVE_UP = "give_up"
 
 
-#: Which tools are actually wired into task_executor.py today. Tools not in
-#: this set are part of the §19 design but not yet integrated — callers
-#: should treat a recommendation of one of those as "blocked pending
-#: implementation", not "try it and see".
+#: Which tools are actually wired into task_executor.py today. ``True`` means
+#: the code path exists and will be attempted; it does not guarantee success
+#: against a given vendor, and PAID_CAPTCHA_SOLVER additionally soft-degrades
+#: to a no-op if ``TWOCAPTCHA_API_KEY`` isn't configured (see
+#: :func:`twocaptcha_api_key`).
 TOOL_IMPLEMENTED: dict[StealthTool, bool] = {
     StealthTool.PLAYWRIGHT_STEALTH: True,
-    StealthTool.NODRIVER: False,
-    StealthTool.CAMOUFOX: False,
-    StealthTool.PAID_CAPTCHA_SOLVER: False,
+    StealthTool.NODRIVER: True,
+    StealthTool.CAMOUFOX: True,
+    StealthTool.PAID_CAPTCHA_SOLVER: True,
     StealthTool.GIVE_UP: True,
 }
+
+
+def twocaptcha_api_key() -> str | None:
+    """Return the configured 2Captcha API key, or ``None`` if unset."""
+    return os.environ.get("TWOCAPTCHA_API_KEY") or None
 
 #: Escalation ladder per vendor, most-likely-to-work first, as designed in
 #: artifact.md §19's "stealth toolkit". ``NONE`` (no detected vendor) starts
@@ -127,6 +167,178 @@ def recommend_tool(vendor: BotVendor, attempts_so_far: int) -> StealthTool:
     if attempts_so_far >= len(ladder):
         return StealthTool.GIVE_UP
     return ladder[attempts_so_far]
+
+
+# ---------------------------------------------------------------------------
+# nodriver / Camoufox cookie warming
+#
+# Both tools solve the same problem the same way: launch an engine that
+# clears a given anti-bot vendor's checks, let the challenge resolve, export
+# the resulting session cookies in Playwright's ``add_cookies`` shape, then
+# hand off to the existing Playwright-based connector. Neither engine's page-
+# interaction API is used beyond that handoff point — duplicating selector
+# logic per engine isn't worth it when the one already built keeps working
+# once it holds a legitimate cookie jar.
+# ---------------------------------------------------------------------------
+
+#: Playwright's ``BrowserContext.add_cookies`` cookie dict shape.
+CookieDict = dict[str, Any]
+
+
+def _same_site_value(raw: Any) -> str | None:
+    """Normalize a CDP ``CookieSameSite`` value to Playwright's expected string."""
+    value = getattr(raw, "value", raw)
+    return value if value in ("Strict", "Lax", "None") else None
+
+
+def _nodriver_cookies_to_playwright(cookies: list[Any]) -> list[CookieDict]:
+    out: list[CookieDict] = []
+    for c in cookies:
+        entry: CookieDict = {
+            "name": c.name,
+            "value": c.value,
+            "domain": c.domain,
+            "path": c.path or "/",
+            "httpOnly": bool(c.http_only),
+            "secure": bool(c.secure),
+        }
+        if c.expires and c.expires > 0:
+            entry["expires"] = c.expires
+        same_site = _same_site_value(c.same_site)
+        if same_site is not None:
+            entry["sameSite"] = same_site
+        out.append(entry)
+    return out
+
+
+def _find_playwright_chromium() -> str | None:
+    """Locate the Chromium binary Playwright already downloaded.
+
+    nodriver drives Chrome/Chromium directly and needs a real executable
+    path; reusing Playwright's copy avoids a second browser download in the
+    Render build (``playwright install chromium`` already fetches one).
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            path = p.chromium.executable_path
+            return path if path else None
+    except Exception:
+        logger.warning("Could not locate Playwright's Chromium for nodriver", exc_info=True)
+        return None
+
+
+async def warm_with_nodriver(url: str, wait_seconds: float = 8.0) -> list[CookieDict]:
+    """Visit ``url`` with nodriver until any challenge clears; return cookies.
+
+    Raises on failure to launch/navigate — callers should treat that as a
+    failed bypass attempt (:meth:`BotDetectionTracker.record_failure`), same
+    as any other tool in the ladder.
+    """
+    import nodriver  # type: ignore[import-untyped]
+
+    executable_path = _find_playwright_chromium()
+    browser = await nodriver.start(
+        headless=True,
+        sandbox=False,
+        browser_executable_path=executable_path,
+    )
+    try:
+        await browser.get(url)
+        await asyncio.sleep(wait_seconds)
+        raw_cookies = await browser.cookies.get_all()
+        return _nodriver_cookies_to_playwright(raw_cookies)
+    finally:
+        browser.stop()
+
+
+async def warm_with_camoufox(url: str, wait_seconds: float = 8.0) -> list[CookieDict]:
+    """Visit ``url`` with Camoufox (patched Firefox) until any challenge
+    clears; return cookies in Playwright's ``add_cookies`` shape.
+
+    Camoufox exposes a genuine Playwright ``Browser``, so its own
+    ``context.cookies()`` is used directly rather than a format conversion.
+    """
+    from camoufox.async_api import AsyncCamoufox
+
+    async with AsyncCamoufox(headless=True) as browser:
+        context = await browser.new_context()  # type: ignore[union-attr]
+        page = await context.new_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded")
+            await asyncio.sleep(wait_seconds)
+            return cast(list[CookieDict], await context.cookies())
+        finally:
+            await context.close()
+
+
+async def warm_cookies(tool: StealthTool, url: str) -> list[CookieDict]:
+    """Dispatch to the cookie warmer for ``tool``.
+
+    Raises :class:`ValueError` for a tool with no warmer (PLAYWRIGHT_STEALTH
+    patches an existing context rather than warming a new one; PAID_CAPTCHA_
+    SOLVER and GIVE_UP aren't warmers at all).
+    """
+    if tool is StealthTool.NODRIVER:
+        return await warm_with_nodriver(url)
+    if tool is StealthTool.CAMOUFOX:
+        return await warm_with_camoufox(url)
+    raise ValueError(f"{tool.value} has no cookie warmer")
+
+
+# ---------------------------------------------------------------------------
+# 2Captcha paid solving (final rung before GIVE_UP)
+# ---------------------------------------------------------------------------
+
+class CaptchaSolveError(Exception):
+    """Raised when a 2Captcha solve request fails or times out."""
+
+
+async def solve_recaptcha_v2(sitekey: str, url: str, *, api_key: str | None = None) -> str:
+    """Solve an inline reCAPTCHA v2 challenge via 2Captcha; return the token.
+
+    The 2captcha-python client is synchronous (it polls over HTTP), so it
+    runs in a worker thread rather than blocking the event loop.
+    """
+    key = api_key or twocaptcha_api_key()
+    if not key:
+        raise CaptchaSolveError("TWOCAPTCHA_API_KEY not configured")
+
+    from twocaptcha import (  # type: ignore[import-untyped]
+        ApiException,
+        NetworkException,
+        TimeoutException,
+        TwoCaptcha,
+    )
+
+    solver = TwoCaptcha(key)
+    try:
+        result = await asyncio.to_thread(solver.recaptcha, sitekey=sitekey, url=url)
+        return result["code"]
+    except (ApiException, NetworkException, TimeoutException) as e:
+        raise CaptchaSolveError(f"2Captcha reCAPTCHA solve failed: {e}") from e
+
+
+async def solve_hcaptcha(sitekey: str, url: str, *, api_key: str | None = None) -> str:
+    """Solve an inline hCaptcha challenge via 2Captcha; return the token."""
+    key = api_key or twocaptcha_api_key()
+    if not key:
+        raise CaptchaSolveError("TWOCAPTCHA_API_KEY not configured")
+
+    from twocaptcha import (  # type: ignore[import-untyped]
+        ApiException,
+        NetworkException,
+        TimeoutException,
+        TwoCaptcha,
+    )
+
+    solver = TwoCaptcha(key)
+    try:
+        result = await asyncio.to_thread(solver.hcaptcha, sitekey=sitekey, url=url)
+        return result["code"]
+    except (ApiException, NetworkException, TimeoutException) as e:
+        raise CaptchaSolveError(f"2Captcha hCaptcha solve failed: {e}") from e
 
 
 # ---------------------------------------------------------------------------
