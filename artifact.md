@@ -270,11 +270,11 @@ Platform earns
 | Deep crawler | ✅ Defined | Firecrawl · 1,000 credits/month |
 | Writing engine | ✅ Defined | NVIDIA NIM · articles, prompts, task output |
 | Database | ✅ Defined | Supabase · all state |
-| Browser automation | ⚠️ Partial | Playwright · CAPTCHA detection/escalation/blocklist built (§19), nodriver/Camoufox not yet integrated |
-| Email inbox | ⚠️ Partial | IMAP client + verification/payment-alert parsing built — not yet used in a live signup flow |
-| CAPTCHA handler | ⚠️ Partial | Detection + escalation ladder + playwright-stealth built · nodriver/Camoufox/playwright-captcha still gaps |
+| Browser automation | ⚠️ Partial | Playwright · real connectors exist for Clickworker/Toloka · CAPTCHA detection/escalation/blocklist built (§19), nodriver/Camoufox not yet integrated |
+| Email inbox | ⚠️ Partial | IMAP client + payment-alert scanning live (every 15 min) — verification-link flow not yet called during signup |
+| CAPTCHA handler | ⚠️ Partial | Detection + escalation ladder + playwright-stealth built and wired · nodriver/Camoufox/playwright-captcha still gaps — ladder effectively has 1 of 4 rungs implemented |
 | Code sandbox | ❌ Gap | For testing micro-tools before selling |
-| Task memory | ❌ Gap | Outcome scoring per task type |
+| Task memory | ✅ SOLVED | `src/respawn_policy.py` — `record_outcome` scores every task attempt by platform + task type; `FRESH_SLATE`/`CARRY_FORWARD` decides whether a new life inherits it |
 | Alert system | ✅ SOLVED | Pluggable notifiers fire once on entering Critical/Terminal & on death (`src/alert_system.py`) |
 
 ---
@@ -432,16 +432,17 @@ dashboard.py         — Rich terminal UI, live status
 |---|---|---|
 | ✅ | Payment confirmation | **SOLVED** — `POST /api/webhooks/payoneer` in `main.py` (`src/payoneer_webhook.py`) verifies an HMAC-SHA256 signature, credits the wallet idempotently by `payment_id`, repays debt first. Payload field names are defensive/best-effort since Payoneer's exact webhook schema isn't public — narrow once real payloads are observed. |
 | ✅ | CI pipeline | **SOLVED** — `ci.yml` now runs `ruff` + `pytest` (was a Node no-op); flaky WS test fixed |
-| 🟡 | Email inbox | `src/email_inbox.py` built — IMAP client (soft-configured via `EMAIL_IMAP_*` env vars), verification link/code extraction, payment-alert detection, scanned every 15 min into the event feed/cold archive. Not yet wired: connectors calling `wait_for_verification_email` during an actual platform signup flow |
-| 🟡 | CAPTCHA handling | §19 detection/escalation/blocklist + playwright-stealth built — nodriver/Camoufox/playwright-captcha not yet integrated |
-| 🟡 | Withdrawal mechanism | Dashboard UI + `POST /api/withdraw` built (`src/withdrawal.py`) — debits the chosen pool and requests a Payoneer payout, queuing for manual processing until `PAYONEER_API_KEY`/`PAYONEER_PROGRAM_ID` are configured |
+| 🟡 | Email inbox | `src/email_inbox.py` built — IMAP client (soft-configured via `EMAIL_IMAP_*` env vars), verification link/code extraction, payment-alert detection; payment-alert scanning is live (runs every 15 min, wired into the event feed/cold archive). **Not wired**: no connector calls `wait_for_verification_email` during signup — most real platforms require email verification to create an account at all, so this blocks autonomous onboarding to new platforms until closed |
+| 🟡 | CAPTCHA handling | §19 detection/escalation/blocklist + playwright-stealth built and wired into `TaskExecutor`/`BrowserSessionManager` — but `nodriver`/`Camoufox`/`playwright-captcha` are not integrated, so the escalation ladder only has its weakest rung (`playwright-stealth`) actually implemented; any platform behind Cloudflare/DataDome-class protection currently just gets blocklisted and abandoned rather than bypassed |
+| ✅ | Withdrawal mechanism | **SOLVED** — Dashboard UI + `POST /api/withdraw` (`src/withdrawal.py`) debits the chosen pool and requests a Payoneer payout, queuing for manual processing until `PAYONEER_API_KEY`/`PAYONEER_PROGRAM_ID` are configured (same soft-dependency pattern as the Payoneer webhook) |
 | 🟡 | Ethical guardrail | **SOLVED** — `src/guardrails.py` hard blacklist (spam/fake review/plagiarism/ToS violation/illegal) enforced in `task_scorer` + `task_executor` even in Terminal state |
 | 🟡 | Respawn policy | **SOLVED** (`src/respawn_policy.py`) — `FRESH_SLATE` vs `CARRY_FORWARD` of empirical task scores on rebirth |
-| 🟡 | Human approval gate | `src/approval_gate.py` built — veto-window model: spends ≥ $2.00 are announced (alert + dashboard card) and held for a 6-hour window rather than blocking; auto-approve and execute via `Wallet.ai_spend` if unrejected, resolved once per minute in `survival_tick`. `GET /api/spend/pending` / `POST /api/spend/{id}/reject` plus a dashboard "Pending AI Spends" card let the user veto within the window. Spends below $2.00 execute immediately through the existing wallet gates |
+| ✅ | Human approval gate | **SOLVED** — `src/approval_gate.py`: veto-window model, spends ≥ $2.00 announced (alert + dashboard card) and held 6h rather than blocking; auto-approve and execute via `Wallet.ai_spend` if unrejected, resolved once per minute in `survival_tick`. `GET /api/spend/pending` / `POST /api/spend/{id}/reject` plus a dashboard "Pending AI Spends" card let the user veto within the window. Verified live in production (`pending_spends` Supabase table created, endpoints return 200) |
 | ✅ | Audit trail | **SOLVED** — src/audit_trail.py records every scored/executed decision with reasoning, state + debt |
 | ✅ | Alert system | **SOLVED**: `src/alert_system.py` pluggable notifiers (default logging) fire once on entering danger states & on death |
 | ✅ | Task timeout | **SOLVED** — `asyncio.wait_for` cap in `TaskExecutor.execute_task` (default 300s); excess → failed result, $0 credit |
-| 🟡 | Scam handling | §20 legitimacy scoring/payment-window tracking/blacklist/wallet-reversal built — live research step (DDG/review scoring) not yet wired |
+| 🟡 | Scam handling | §20 legitimacy scoring/payment-window tracking/blacklist/wallet-reversal built and unit-tested — but **nothing in the autonomous loop calls any of it yet**: `research_loop.py` never calls `score_legitimacy` before a platform is joined, and nothing calls `ScamTracker.register_task` or checks `overdue_tasks`/`grace_exceeded_tasks` on a schedule. `SurvivalLoop.record_scam` only fires if invoked directly (e.g. manually or from a future connector). Net effect: today the agent has no autonomous scam protection in production, despite the detection logic existing and passing tests |
+| 🔴 | API authentication | **Gap** — `/api/withdraw`, `/api/spend/pending`, `/api/spend/{id}/reject`, and every other state-changing endpoint except `/api/webhooks/payoneer` (HMAC-verified) have **no authentication at all**. Since the dashboard is intentionally public (§1, §18), anyone who finds the Render URL can trigger a withdrawal or veto every pending AI spend, silently defeating the human-approval gate this session just built. Needs an API key / bearer token check on every mutating endpoint before this goes further |
 
 ---
 
