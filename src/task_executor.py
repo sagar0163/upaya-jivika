@@ -34,7 +34,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from src.audit_trail import AuditTrail
 from src.captcha_handler import BotDetectionTracker, PlatformBlockError
 from src.guardrails import get_guardrail
-from src.scam_detection import PlatformScammedError, ScamTracker
+from src.scam_detection import PaymentWindow, PlatformScammedError, PlatformType, ScamTracker
 from src.state_machine import resolve_state
 from src.task_scorer import (
     PaymentMethod,
@@ -996,6 +996,19 @@ class TaskExecutor:
             except Exception as e:
                 logger.error(f"Wallet credit failed: {e}")
                 result.platform_data["wallet_error"] = str(e)
+
+            # §20: track this payout so a missed real-world payment window
+            # (platform confirms the task but never actually pays out) is
+            # caught by SurvivalLoop's scheduled grace-exceeded check.
+            if self.scam_tracker is not None:
+                self.scam_tracker.register_task(
+                    PaymentWindow(
+                        task_id=result.task_id,
+                        platform=candidate.platform.value,
+                        platform_type=PlatformType.MICRO_TASK,
+                        started_at=datetime.utcnow(),
+                    )
+                )
 
         if self.audit_trail is not None:
             state = resolve_state(self.wallet.debt)

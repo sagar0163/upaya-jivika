@@ -40,7 +40,7 @@ from src.payoneer_webhook import (
 from src.persistence import PersistenceStore, create_persistence_store
 from src.research_loop import ResearchAgent
 from src.respawn_policy import RespawnPolicyEngine
-from src.scam_detection import ScamEvent, ScamTracker
+from src.scam_detection import ScamEvent, ScamTracker, ScamType
 from src.soul_crystal import LifeRecord, ReincarnationEngine
 from src.state_machine import SurvivalStateMachine
 from src.wallet import SpendRequest, Wallet, WalletError
@@ -428,6 +428,10 @@ class SurvivalLoop:
             self.resolve_pending_spends()
         except Exception:
             logger.exception("resolve_pending_spends failed — will retry next tick")
+        try:
+            self.check_scam_windows()
+        except Exception:
+            logger.exception("check_scam_windows failed — will retry next tick")
 
     def record_task_outcome(
         self,
@@ -574,6 +578,34 @@ class SurvivalLoop:
             result["wallet_reversal"] = {k: str(v) for k, v in reversal.items()}
         return result
 
+    def check_scam_windows(self) -> list[dict[str, Any]]:
+        """Auto-confirm any payment window that exceeded window + grace.
+
+        ``PaymentWindow.is_grace_exceeded`` already documents this exact
+        threshold as "treat as confirmed scam per the §20 protocol" — this
+        just acts on that contract on a schedule instead of requiring a
+        human to notice and call :meth:`record_scam` manually. A window still
+        inside its grace period (``overdue_tasks``) is only a suspicion and
+        is left alone; only grace-exceeded windows are auto-confirmed.
+        """
+        results: list[dict[str, Any]] = []
+        for window in self.scam_tracker.grace_exceeded_tasks():
+            if self.scam_tracker.is_platform_scammed(window.platform):
+                self.scam_tracker.mark_paid(window.task_id)
+                continue
+            event = ScamEvent(
+                platform=window.platform,
+                scam_type=ScamType.TIME_SCAM,
+                life=self.debt_engine.state.life_number,
+                lesson=(
+                    f"Task {window.task_id} on {window.platform} unpaid "
+                    f"past its {window.platform_type.value} grace deadline"
+                ),
+            )
+            results.append(self.record_scam(event))
+            self.scam_tracker.mark_paid(window.task_id)
+        return results
+
     # -- email inbox (platform verifications + payment alerts) --------------
 
     def scan_email_for_payment_alerts(self) -> list[dict[str, Any]]:
@@ -605,6 +637,17 @@ class SurvivalLoop:
                 self.email_inbox.mark_as_read(msg.uid)
             except Exception:
                 logger.exception("Failed to mark payment-alert email %s as read", msg.uid)
+
+            haystack = f"{msg.sender} {msg.subject}".lower()
+            for platform in self.scam_tracker.unpaid_platforms():
+                if platform.lower() in haystack:
+                    resolved = self.scam_tracker.mark_platform_paid(platform)
+                    if resolved:
+                        logger.info(
+                            "Payment alert matched platform %s — resolved %d window(s)",
+                            platform,
+                            resolved,
+                        )
 
         if found:
             self._persist_all()

@@ -1190,6 +1190,50 @@ class TestTaskExecutor:
         await executor.stop()
 
     @pytest.mark.asyncio
+    async def test_execute_task_registers_payment_window(self, executor, mock_wallet):
+        """A successful task registers a §20 payment window with the scam tracker."""
+        from src.persistence import InMemoryStore
+        from src.scam_detection import ScamTracker
+        from src.task_executor import ClickworkerConnector
+        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskResult, TaskType
+
+        await executor.start()
+        executor.scam_tracker = ScamTracker(InMemoryStore())
+
+        mock_connector = AsyncMock(spec=ClickworkerConnector)
+        mock_connector.execute_task = AsyncMock(return_value=TaskResult(
+            task_id="test123",
+            candidate=TaskCandidate(
+                platform=Platform.CLICKWORKER,
+                task_type=TaskType.MICROTASK,
+                title="Test",
+                estimated_pay=Decimal("10.00"),
+                estimated_hours=Decimal("1.0"),
+                payment_method=PaymentMethod.PAYONEER,
+            ),
+            success=True,
+            amount_earned=Decimal("10.00"),
+            time_spent_hours=Decimal("1.0"),
+            error=None,
+        ))
+        executor._connectors[Platform.CLICKWORKER] = mock_connector
+
+        candidate = TaskCandidate(
+            platform=Platform.CLICKWORKER,
+            task_type=TaskType.MICROTASK,
+            title="Test",
+            estimated_pay=Decimal("10.00"),
+            estimated_hours=Decimal("1.0"),
+            payment_method=PaymentMethod.PAYONEER,
+        )
+
+        await executor.execute_task(candidate)
+
+        assert executor.scam_tracker.unpaid_platforms() == {"clickworker"}
+
+        await executor.stop()
+
+    @pytest.mark.asyncio
     async def test_execute_task_failure_no_wallet_credit(self, executor, mock_wallet):
         """Test that failed task doesn't credit wallet."""
         from src.task_executor import ClickworkerConnector

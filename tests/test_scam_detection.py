@@ -223,6 +223,58 @@ class TestScamTracker:
         assert wallet.free == Decimal("0.00")
         assert wallet.debt == Decimal("3.00")
 
+    def test_unpaid_platforms_lists_distinct_platforms(self):
+        tracker = ScamTracker(InMemoryStore())
+        tracker.register_task(
+            PaymentWindow(
+                task_id="t1", platform="clickworker",
+                platform_type=PlatformType.MICRO_TASK, started_at=datetime.utcnow(),
+            )
+        )
+        tracker.register_task(
+            PaymentWindow(
+                task_id="t2", platform="clickworker",
+                platform_type=PlatformType.MICRO_TASK, started_at=datetime.utcnow(),
+            )
+        )
+        tracker.register_task(
+            PaymentWindow(
+                task_id="t3", platform="toloka",
+                platform_type=PlatformType.MICRO_TASK, started_at=datetime.utcnow(),
+            )
+        )
+        assert tracker.unpaid_platforms() == {"clickworker", "toloka"}
+
+    def test_mark_platform_paid_resolves_all_windows_for_platform(self):
+        tracker = ScamTracker(InMemoryStore())
+        tracker.register_task(
+            PaymentWindow(
+                task_id="t1", platform="clickworker",
+                platform_type=PlatformType.MICRO_TASK, started_at=datetime.utcnow(),
+            )
+        )
+        tracker.register_task(
+            PaymentWindow(
+                task_id="t2", platform="clickworker",
+                platform_type=PlatformType.MICRO_TASK, started_at=datetime.utcnow(),
+            )
+        )
+        tracker.register_task(
+            PaymentWindow(
+                task_id="t3", platform="toloka",
+                platform_type=PlatformType.MICRO_TASK, started_at=datetime.utcnow(),
+            )
+        )
+
+        resolved = tracker.mark_platform_paid("clickworker")
+
+        assert resolved == 2
+        assert tracker.unpaid_platforms() == {"toloka"}
+
+    def test_mark_platform_paid_returns_zero_when_nothing_outstanding(self):
+        tracker = ScamTracker(InMemoryStore())
+        assert tracker.mark_platform_paid("clickworker") == 0
+
 
 class TestWalletReverseCredit:
     def test_reverse_credit_requires_positive_amount(self):

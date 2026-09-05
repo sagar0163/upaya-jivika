@@ -190,6 +190,25 @@ class ScamTracker:
         if task_id in self._windows:
             self._windows[task_id].paid = True
 
+    def unpaid_platforms(self) -> set[str]:
+        """Distinct platforms with at least one outstanding payment window."""
+        return {w.platform for w in self._windows.values() if not w.paid}
+
+    def mark_platform_paid(self, platform: str) -> int:
+        """Mark every outstanding window for ``platform`` as paid.
+
+        Used when a payment-alert email confirms a payout arrived but the
+        email itself carries no task_id — the platform-level signal is all
+        we have, so every window still open for it is resolved at once.
+        Returns the number of windows resolved.
+        """
+        resolved = 0
+        for window in self._windows.values():
+            if window.platform == platform and not window.paid:
+                window.paid = True
+                resolved += 1
+        return resolved
+
     def overdue_tasks(self, now: Optional[datetime] = None) -> list[PaymentWindow]:
         """Tasks past their expected window (suspected, not yet confirmed)."""
         now = now or datetime.utcnow()
