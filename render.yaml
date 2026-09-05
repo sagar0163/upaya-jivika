@@ -15,6 +15,45 @@ services:
         sync: false
       - key: HF_TOKEN
         sync: false
+      # Gates every state-mutating endpoint (/api/withdraw,
+      # /api/spend/{id}/reject, /api/debt/tick, /api/research/trigger,
+      # /api/email/scan) via require_api_token (src/api_auth.py) — that
+      # check fails CLOSED (503) when this is unset, so those endpoints are
+      # silently disabled on a fresh deploy until this is configured.
+      - key: API_AUTH_TOKEN
+        sync: false
+      # §9/§15 brain_router LLM fallback chain (NVIDIA -> Groq -> Gemini ->
+      # Mistral -> OpenRouter), already used as GitHub Actions secrets in
+      # debt_clock.yml/research.yml — without these declared here too, the
+      # fallback the risk register credits with mitigating NVIDIA rate
+      # limits never actually triggers on the Render-hosted service.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      # §10 Layer-2 public narrative diary (src/diary.py) — writes silently
+      # no-op without this (same soft-dependency pattern as HF_TOKEN).
+      - key: GITHUB_TOKEN
+        sync: false
+      # §14 real payouts (src/withdrawal.py) — withdrawals queue for manual
+      # processing rather than actually paying out until both are set.
+      - key: PAYONEER_API_KEY
+        sync: false
+      - key: PAYONEER_PROGRAM_ID
+        sync: false
+      # Email verification-link/payment-alert scanning (src/email_inbox.py).
+      - key: EMAIL_IMAP_HOST
+        sync: false
+      - key: EMAIL_IMAP_PORT
+        sync: false
+      - key: EMAIL_IMAP_USER
+        sync: false
+      - key: EMAIL_IMAP_PASSWORD
+        sync: false
       # §19 paid CAPTCHA-solving fallback (2captcha.com) — soft-configured,
       # same pattern as the other optional secrets: the ladder just stops one
       # rung earlier (GIVE_UP) when this isn't set.
