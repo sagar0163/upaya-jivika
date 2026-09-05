@@ -270,9 +270,9 @@ Platform earns
 | Deep crawler | ✅ Defined | Firecrawl · 1,000 credits/month |
 | Writing engine | ✅ Defined | NVIDIA NIM · articles, prompts, task output |
 | Database | ✅ Defined | Supabase · all state |
-| Browser automation | ⚠️ Partial | Playwright · CAPTCHA handling designed (§19) but not yet implemented |
+| Browser automation | ⚠️ Partial | Playwright · CAPTCHA detection/escalation/blocklist built (§19), nodriver/Camoufox not yet integrated |
 | Email inbox | ❌ Gap | Platform verifications + payment alerts |
-| CAPTCHA handler | ❌ Gap | Fiverr/Upwork use bot detection |
+| CAPTCHA handler | ⚠️ Partial | Detection + escalation ladder + playwright-stealth built · nodriver/Camoufox/playwright-captcha still gaps |
 | Code sandbox | ❌ Gap | For testing micro-tools before selling |
 | Task memory | ❌ Gap | Outcome scoring per task type |
 | Alert system | ✅ SOLVED | Pluggable notifiers fire once on entering Critical/Terminal & on death (`src/alert_system.py`) |
@@ -433,7 +433,7 @@ dashboard.py         — Rich terminal UI, live status
 | ✅ | Payment confirmation | **SOLVED** — `POST /api/webhooks/payoneer` in `main.py` (`src/payoneer_webhook.py`) verifies an HMAC-SHA256 signature, credits the wallet idempotently by `payment_id`, repays debt first. Payload field names are defensive/best-effort since Payoneer's exact webhook schema isn't public — narrow once real payloads are observed. |
 | ✅ | CI pipeline | **SOLVED** — `ci.yml` now runs `ruff` + `pytest` (was a Node no-op); flaky WS test fixed |
 | 🔴 | Email inbox | Needed for platform verifications + payment alerts |
-| 🟡 | CAPTCHA handling | Strategy designed (§19: nodriver/Camoufox/playwright-stealth/playwright-captcha) — not yet built |
+| 🟡 | CAPTCHA handling | §19 detection/escalation/blocklist + playwright-stealth built — nodriver/Camoufox/playwright-captcha not yet integrated |
 | 🔴 | Withdrawal mechanism | UI for user to move pools to real bank account |
 | 🟡 | Ethical guardrail | **SOLVED** — `src/guardrails.py` hard blacklist (spam/fake review/plagiarism/ToS violation/illegal) enforced in `task_scorer` + `task_executor` even in Terminal state |
 | 🟡 | Respawn policy | **SOLVED** (`src/respawn_policy.py`) — `FRESH_SLATE` vs `CARRY_FORWARD` of empirical task scores on rebirth |
@@ -450,7 +450,7 @@ dashboard.py         — Rich terminal UI, live status
 | Risk | Level | Mitigation |
 |---|---|---|
 | Platform ToS violation | 🔴 HIGH | Human-paced Playwright · research ToS before joining any platform |
-| CAPTCHA blocking earning | 🟡 MEDIUM | Try ToS-safe platforms first · Clickworker/Toloka less aggressive · layered bypass strategy designed in §19, not yet built |
+| CAPTCHA blocking earning | 🟡 MEDIUM | Try ToS-safe platforms first · Clickworker/Toloka less aggressive · §19 detection/escalation/blocklist + playwright-stealth built, nodriver/Camoufox/playwright-captcha still gaps |
 | Payment not confirming | ✅ SOLVED | `/api/webhooks/payoneer` credits the wallet automatically on a signed `completed` event, idempotent by `payment_id` |
 | Render sleep kills debt clock | 🟡 MEDIUM | Debt state persisted in Supabase — survives sleep |
 | NVIDIA rate limit changes | 🟡 MEDIUM | Full fallback chain: Groq → Gemini → Mistral → OpenRouter |
@@ -639,7 +639,7 @@ Each phase after ships into this live system:
 
 ## 19. CAPTCHA & Bot Detection Strategy
 
-**Status: Planned, not yet implemented — no `nodriver`/`Camoufox`/`playwright-stealth`/`playwright-captcha` in `requirements.txt` and no code exists yet. Design below is the intended approach.**
+**Status: Partially implemented (`src/captcha_handler.py`).** Vendor probing (`detect_bot_vendor`), the per-platform escalation ladder (`recommend_tool`/`BotDetectionTracker`), permanent block tracking (persisted via `is_platform_blocked`/`mark_platform_blocked`, survives `clear()`), and behavioral simulation (`human_delay`/`human_type`) are built and unit-tested. `playwright-stealth` is wired into `BrowserSessionManager.create_context()` (soft dependency — no-ops if not installed) and `TaskExecutor` refuses to spend a login attempt on a platform the tracker has already blocked. **`nodriver`, `Camoufox`, and `playwright-captcha` are not integrated** — they are separate browser engines/libraries incompatible with the existing Playwright-based connectors, so the ladder currently only has a real tool at its first rung; escalation past `playwright-stealth` still results in `GIVE_UP`/block until those are built.
 
 ### Detection layers (must beat all 5 simultaneously)
 

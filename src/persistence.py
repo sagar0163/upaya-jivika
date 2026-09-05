@@ -176,6 +176,19 @@ class PersistenceStore(ABC):
     def mark_payment_processed(self, payment_id: str, data: dict[str, Any]) -> None:
         """Record a Payoneer payment_id as processed, with its raw event data."""
 
+    @abstractmethod
+    def is_platform_blocked(self, platform: str) -> bool:
+        """Return True if this platform was permanently blocked (§19).
+
+        Permanent, like :meth:`is_payment_processed` — a platform blocked in
+        a past life stays blocked; the agent must not rediscover the same
+        dead end and waste debt-time on it again.
+        """
+
+    @abstractmethod
+    def mark_platform_blocked(self, platform: str, data: dict[str, Any]) -> None:
+        """Permanently record ``platform`` as blocked, with bypass attempt data."""
+
 
 # ---------------------------------------------------------------------------
 # In-memory fallback
@@ -191,6 +204,7 @@ class InMemoryStore(PersistenceStore):
         self._soul_crystals: list[dict[str, Any]] = []
         self._events: list[str] = []
         self._processed_payments: dict[str, dict[str, Any]] = {}
+        self._blocked_platforms: dict[str, dict[str, Any]] = {}
 
     def save_debt_state(self, state: DebtState) -> None:
         self._debt_state = _debt_state_to_dict(state)
@@ -242,6 +256,12 @@ class InMemoryStore(PersistenceStore):
 
     def mark_payment_processed(self, payment_id: str, data: dict[str, Any]) -> None:
         self._processed_payments[payment_id] = dict(data)
+
+    def is_platform_blocked(self, platform: str) -> bool:
+        return platform in self._blocked_platforms
+
+    def mark_platform_blocked(self, platform: str, data: dict[str, Any]) -> None:
+        self._blocked_platforms[platform] = dict(data)
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +321,11 @@ class SupabaseStore(PersistenceStore):
             created_at TIMESTAMPTZ DEFAULT now()
         );
         CREATE TABLE IF NOT EXISTS processed_payments (
+            id    TEXT PRIMARY KEY,
+            data  JSONB NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS blocked_platforms (
             id    TEXT PRIMARY KEY,
             data  JSONB NOT NULL,
             created_at TIMESTAMPTZ DEFAULT now()
@@ -407,6 +432,14 @@ class SupabaseStore(PersistenceStore):
 
     def mark_payment_processed(self, payment_id: str, data: dict[str, Any]) -> None:
         self._upsert_row("processed_payments", payment_id, data)
+
+    # -- blocked_platforms (§19 permanent bot-block memory) -----------------
+
+    def is_platform_blocked(self, platform: str) -> bool:
+        return self._load_row("blocked_platforms", platform) is not None
+
+    def mark_platform_blocked(self, platform: str, data: dict[str, Any]) -> None:
+        self._upsert_row("blocked_platforms", platform, data)
 
 
 # ---------------------------------------------------------------------------

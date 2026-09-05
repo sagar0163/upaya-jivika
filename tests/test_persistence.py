@@ -309,11 +309,61 @@ class TestInMemoryStore:
         assert len(crystals) == 1
         assert crystals[0].life == 1
 
+    def test_clear_preserves_processed_payments(self, store):
+        store.mark_payment_processed("pay_1", {"amount": "5.00"})
+        store.save_debt_state(DebtState(debt=Decimal("5.00")))
+
+        store.clear()
+
+        assert store.is_payment_processed("pay_1") is True
+
+    def test_clear_preserves_blocked_platforms(self, store):
+        store.mark_platform_blocked("scammy.io", {"vendor": "kasada"})
+        store.save_wallet(Wallet(free=Decimal("1.00")))
+
+        store.clear()
+
+        assert store.is_platform_blocked("scammy.io") is True
+
     def test_save_overwrites_previous(self, store):
         store.save_debt_state(DebtState(debt=Decimal("1.00")))
         store.save_debt_state(DebtState(debt=Decimal("2.00")))
         loaded = store.load_debt_state()
         assert loaded.debt == Decimal("2.00")
+
+
+class TestProcessedPayments:
+    @pytest.fixture
+    def store(self):
+        return InMemoryStore()
+
+    def test_unprocessed_payment_returns_false(self, store):
+        assert store.is_payment_processed("unknown") is False
+
+    def test_marked_payment_is_processed(self, store):
+        store.mark_payment_processed("p1", {"amount": "2.00"})
+        assert store.is_payment_processed("p1") is True
+
+    def test_distinct_payment_ids_independent(self, store):
+        store.mark_payment_processed("p1", {"amount": "2.00"})
+        assert store.is_payment_processed("p2") is False
+
+
+class TestBlockedPlatforms:
+    @pytest.fixture
+    def store(self):
+        return InMemoryStore()
+
+    def test_unblocked_platform_returns_false(self, store):
+        assert store.is_platform_blocked("clickworker") is False
+
+    def test_marked_platform_is_blocked(self, store):
+        store.mark_platform_blocked("badplatform.io", {"vendor": "cloudflare", "attempts": 3})
+        assert store.is_platform_blocked("badplatform.io") is True
+
+    def test_distinct_platforms_independent(self, store):
+        store.mark_platform_blocked("badplatform.io", {"vendor": "cloudflare"})
+        assert store.is_platform_blocked("goodplatform.io") is False
 
 
 # ---------------------------------------------------------------------------

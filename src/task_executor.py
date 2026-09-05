@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from src.audit_trail import AuditTrail
+from src.captcha_handler import BotDetectionTracker, PlatformBlockError
 from src.guardrails import get_guardrail
 from src.state_machine import resolve_state
 from src.task_scorer import (
@@ -738,9 +739,30 @@ class BrowserSessionManager:
             # Type ignore for cookie dict compatibility
             await context.add_cookies(stored)  # type: ignore[arg-type]
 
+        await self._apply_stealth(context)
+
         self._contexts[name] = context
         logger.debug(f"Created browser context: {name}")
         return context
+
+    async def _apply_stealth(self, context: BrowserContext) -> None:
+        """Patch fingerprinting surfaces on a context (artifact.md §19).
+
+        ``playwright-stealth`` is a soft dependency: if it isn't installed
+        the context is used as-is rather than failing task execution over a
+        detection-evasion nicety. This is the free, already-integrated tool
+        at the bottom of the §19 escalation ladder — nodriver/Camoufox are a
+        separate browser engine each and are not wired here.
+        """
+        try:
+            from playwright_stealth import Stealth  # type: ignore[import-not-found]
+        except ImportError:
+            logger.debug("playwright-stealth not installed — context left unpatched")
+            return
+        try:
+            await Stealth().apply_stealth_async(context)
+        except Exception as e:  # pragma: no cover - defensive, library-internal
+            logger.warning(f"playwright-stealth failed to apply: {e}")
 
     async def get_context(self, name: str) -> Optional[BrowserContext]:
         """Get existing context by name."""
@@ -775,6 +797,7 @@ class TaskExecutor:
         guardrail: EthicalGuardrail | None = None,
         task_timeout_seconds: float = DEFAULT_TASK_TIMEOUT_SECONDS,
         audit_trail: Optional[AuditTrail] = None,
+        bot_tracker: Optional[BotDetectionTracker] = None,
     ) -> None:
         self.wallet = wallet
         self.headless = headless
@@ -783,6 +806,9 @@ class TaskExecutor:
         self.guardrail = guardrail or get_guardrail()
         self.task_timeout_seconds = task_timeout_seconds
         self.audit_trail = audit_trail
+        # §19: platforms that exhausted the stealth escalation ladder are
+        # never retried — checked before spending a login attempt on them.
+        self.bot_tracker = bot_tracker
         self.session_manager = BrowserSessionManager(
             headless=headless, storage_dir=session_dir
         )
@@ -830,6 +856,11 @@ class TaskExecutor:
         """
         if platform in self._connectors:
             return self._connectors[platform]
+
+        if self.bot_tracker is not None and self.bot_tracker.is_blocked(platform.value):
+            raise PlatformBlockError(
+                f"{platform.value} is permanently blocked (exhausted §19 stealth ladder)"
+            )
 
         if platform not in CONNECTORS:
             raise ExecutionError(f"No connector for platform: {platform}")

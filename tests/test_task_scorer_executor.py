@@ -1051,6 +1051,46 @@ class TestTaskExecutor:
             await executor._get_connector(Platform.CLICKWORKER)
 
     @pytest.mark.asyncio
+    async def test_get_connector_blocked_platform_raises(self, mock_wallet):
+        """A platform that exhausted the §19 stealth ladder is never retried,
+        even with valid credentials — checked before spending a login attempt."""
+        from src.captcha_handler import BotDetectionTracker, PlatformBlockError
+        from src.persistence import InMemoryStore
+        from src.task_executor import TaskExecutor
+        from src.task_scorer import Platform
+
+        store = InMemoryStore()
+        store.mark_platform_blocked(Platform.CLICKWORKER.value, {"vendor": "kasada"})
+        tracker = BotDetectionTracker(store)
+
+        with patch("src.task_executor.BrowserSessionManager"):
+            executor = TaskExecutor(wallet=mock_wallet, headless=True, bot_tracker=tracker)
+            executor.set_credentials(Platform.CLICKWORKER, {"email": "e", "password": "p"})
+
+            with pytest.raises(PlatformBlockError):
+                await executor._get_connector(Platform.CLICKWORKER)
+
+    @pytest.mark.asyncio
+    async def test_get_connector_unblocked_platform_proceeds(self, executor):
+        """A platform not in the block list is unaffected by an attached tracker."""
+        from src.captcha_handler import BotDetectionTracker
+        from src.persistence import InMemoryStore
+        from src.task_executor import ClickworkerConnector
+        from src.task_scorer import Platform
+
+        executor.bot_tracker = BotDetectionTracker(InMemoryStore())
+        mock_connector = AsyncMock(spec=ClickworkerConnector)
+        mock_connector.login = AsyncMock(return_value=True)
+
+        with patch("src.task_executor.CONNECTORS", {Platform.CLICKWORKER: lambda p, c: mock_connector}):
+            executor.set_credentials(Platform.CLICKWORKER, {"email": "test", "password": "pass"})
+            executor.session_manager.create_context = AsyncMock(return_value=AsyncMock())
+
+            connector = await executor._get_connector(Platform.CLICKWORKER)
+
+        assert connector == mock_connector
+
+    @pytest.mark.asyncio
     async def test_discover_tasks(self, executor):
         """Test discovering tasks from multiple platforms."""
         from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
