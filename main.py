@@ -423,7 +423,10 @@ class SurvivalLoop:
             return
         self.state_machine.update(self.debt_engine.debt)
         self.wallet.debt = self.debt_engine.debt
-        self.resolve_pending_spends()
+        try:
+            self.resolve_pending_spends()
+        except Exception:
+            logger.exception("resolve_pending_spends failed — will retry next tick")
 
     def record_task_outcome(
         self,
