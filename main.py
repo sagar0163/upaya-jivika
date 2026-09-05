@@ -27,6 +27,7 @@ from src.ancestral_memory import AncestralMemory, load_ancestral_memory
 from src.cold_archive import ColdArchive
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
 from src.diary import DiaryWriter
+from src.email_inbox import EmailInboxClient, is_payment_alert
 from src.payoneer_webhook import (
     SIGNATURE_HEADER,
     PayoneerWebhookError,
@@ -110,6 +111,7 @@ class SurvivalLoop:
         self.alerts = AlertSystem()
         self.respawn = RespawnPolicyEngine()
         self.scam_tracker = ScamTracker(self.persistence)
+        self.email_inbox = EmailInboxClient()
 
         # Wire persistence on every debt tick
         self.debt_engine._on_tick = self._on_tick  # type: ignore[assignment]
@@ -565,6 +567,44 @@ class SurvivalLoop:
             result["wallet_reversal"] = {k: str(v) for k, v in reversal.items()}
         return result
 
+    # -- email inbox (platform verifications + payment alerts) --------------
+
+    def scan_email_for_payment_alerts(self) -> list[dict[str, Any]]:
+        """Scan unread mail for payment-alert messages, log them, mark read.
+
+        This is a *signal*, not a source of truth for crediting the wallet —
+        the Payoneer webhook (``record_payment``) remains the only path that
+        moves money. An email alert here just surfaces to the diary/event
+        feed that a payment appears to have landed, e.g. as a cross-check
+        against §20 payment-window monitoring while the webhook may be
+        delayed or the platform pays via a channel with no webhook at all.
+        Silently returns an empty list when the inbox isn't configured.
+        """
+        found: list[dict[str, Any]] = []
+        try:
+            messages = self.email_inbox.fetch_unread()
+        except Exception:
+            logger.exception("Email inbox scan failed")
+            return found
+
+        for msg in messages:
+            if not is_payment_alert(msg):
+                continue
+            entry = {"sender": msg.sender, "subject": msg.subject}
+            found.append(entry)
+            self._event_log.append(f"Payment alert email: {msg.subject} (from {msg.sender})")
+            self.cold_archive.append_event("payment_alert_email", entry)
+            try:
+                self.email_inbox.mark_as_read(msg.uid)
+            except Exception:
+                logger.exception("Failed to mark payment-alert email %s as read", msg.uid)
+
+        if found:
+            self._persist_all()
+            self._broadcast_event("payment_alert_email")
+
+        return found
+
     # -- withdrawal (user moves wallet pools to a real bank account) --------
 
     def process_withdrawal(self, pool: WithdrawalPool, amount: Decimal) -> dict[str, Any]:
@@ -621,6 +661,9 @@ class SurvivalLoop:
 
         self._scheduler.add_job(
             _trigger_research, "interval", hours=6, id="research_trigger"
+        )
+        self._scheduler.add_job(
+            self.scan_email_for_payment_alerts, "interval", minutes=15, id="email_scan"
         )
         self._scheduler.start()
         logger.info(
@@ -833,6 +876,24 @@ async def payoneer_webhook(request: Request):
 
     result = loop.record_payment(event)
     return result
+
+
+@app.get("/api/email/status")
+async def email_status_endpoint():
+    """Report whether the email inbox is configured (diagnostic only)."""
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+    return {"configured": loop.email_inbox.is_configured}
+
+
+@app.post("/api/email/scan")
+async def email_scan_endpoint():
+    """Manually trigger a payment-alert email scan (also runs every 15 min)."""
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+    return {"alerts_found": loop.scan_email_for_payment_alerts()}
 
 
 @app.post("/api/withdraw")

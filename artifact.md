@@ -271,7 +271,7 @@ Platform earns
 | Writing engine | ✅ Defined | NVIDIA NIM · articles, prompts, task output |
 | Database | ✅ Defined | Supabase · all state |
 | Browser automation | ⚠️ Partial | Playwright · CAPTCHA detection/escalation/blocklist built (§19), nodriver/Camoufox not yet integrated |
-| Email inbox | ❌ Gap | Platform verifications + payment alerts |
+| Email inbox | ⚠️ Partial | IMAP client + verification/payment-alert parsing built — not yet used in a live signup flow |
 | CAPTCHA handler | ⚠️ Partial | Detection + escalation ladder + playwright-stealth built · nodriver/Camoufox/playwright-captcha still gaps |
 | Code sandbox | ❌ Gap | For testing micro-tools before selling |
 | Task memory | ❌ Gap | Outcome scoring per task type |
@@ -432,7 +432,7 @@ dashboard.py         — Rich terminal UI, live status
 |---|---|---|
 | ✅ | Payment confirmation | **SOLVED** — `POST /api/webhooks/payoneer` in `main.py` (`src/payoneer_webhook.py`) verifies an HMAC-SHA256 signature, credits the wallet idempotently by `payment_id`, repays debt first. Payload field names are defensive/best-effort since Payoneer's exact webhook schema isn't public — narrow once real payloads are observed. |
 | ✅ | CI pipeline | **SOLVED** — `ci.yml` now runs `ruff` + `pytest` (was a Node no-op); flaky WS test fixed |
-| 🔴 | Email inbox | Needed for platform verifications + payment alerts |
+| 🟡 | Email inbox | `src/email_inbox.py` built — IMAP client (soft-configured via `EMAIL_IMAP_*` env vars), verification link/code extraction, payment-alert detection, scanned every 15 min into the event feed/cold archive. Not yet wired: connectors calling `wait_for_verification_email` during an actual platform signup flow |
 | 🟡 | CAPTCHA handling | §19 detection/escalation/blocklist + playwright-stealth built — nodriver/Camoufox/playwright-captcha not yet integrated |
 | 🟡 | Withdrawal mechanism | Dashboard UI + `POST /api/withdraw` built (`src/withdrawal.py`) — debits the chosen pool and requests a Payoneer payout, queuing for manual processing until `PAYONEER_API_KEY`/`PAYONEER_PROGRAM_ID` are configured |
 | 🟡 | Ethical guardrail | **SOLVED** — `src/guardrails.py` hard blacklist (spam/fake review/plagiarism/ToS violation/illegal) enforced in `task_scorer` + `task_executor` even in Terminal state |
