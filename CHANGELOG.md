@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.5.0](https://github.com/sagar0163/upaya-jivika/compare/v0.4.0...v0.5.0) (2026-09-05)
+
+
+### Features
+
+* **approval-gate:** veto-window human oversight for large AI spends (§14) ([804236b](https://github.com/sagar0163/upaya-jivika/commit/804236b27993cceb4d4f99bd6c8c9f1478542b7d))
+* **captcha:** add bot-detection strategy — vendor probing, escalation ladder, playwright-stealth (§19) ([b537277](https://github.com/sagar0163/upaya-jivika/commit/b53727739401aff89e5be150e632140d80c9e5fd))
+* **captcha:** implement real nodriver/Camoufox/2Captcha bypass ladder ([15373f2](https://github.com/sagar0163/upaya-jivika/commit/15373f2a5e0882e46dafbad6425cd006de8dd9f2))
+* **email:** add email inbox integration — verification links/codes + payment alerts (critical gap) ([e186d7e](https://github.com/sagar0163/upaya-jivika/commit/e186d7efa5535918513d444ccf9723edf79d1b64))
+* **payments:** add Payoneer webhook for payment confirmation (§20) ([a2b15ab](https://github.com/sagar0163/upaya-jivika/commit/a2b15abdcc6711a01c6a7b4dc43582cbe7df1c4a))
+* **scam-detection:** wire payment-window tracking into the autonomous loop ([f766690](https://github.com/sagar0163/upaya-jivika/commit/f76669045f342d3ca5219c6b526d62e529eb9070))
+* **scam:** add scam-handling core — legitimacy scoring, payment windows, blacklist, chargeback reversal (§20) ([ffdd9eb](https://github.com/sagar0163/upaya-jivika/commit/ffdd9ebb506ee860146b3323c4fa40e0619cf80e))
+* **task-execution:** wire TaskExecutor into the autonomous loop ([03e4b47](https://github.com/sagar0163/upaya-jivika/commit/03e4b47ccfee3911273e7c1071a80aeeeeb2a0d3))
+* **withdrawal:** add withdrawal mechanism — dashboard UI + Payoneer payout (critical gap) ([439c955](https://github.com/sagar0163/upaya-jivika/commit/439c95595e75261ca86a0c6481fda35276f656a3))
+
+
+### Bug Fixes
+
+* **approval-gate:** guard survival_tick against persistence failures ([5453443](https://github.com/sagar0163/upaya-jivika/commit/5453443980616e3995d0a13a89b6601a90a48095))
+* **captcha:** run blocking sync_playwright() lookup off the event loop ([1b616dd](https://github.com/sagar0163/upaya-jivika/commit/1b616dd4e0b40336f5b2d3922bacb8b3e930fe7b))
+* close browser context leak on failed login, atomic payment claim ([e26d2ba](https://github.com/sagar0163/upaya-jivika/commit/e26d2ba8fb22d1c08db6cb2fc4bbacb5098817b6))
+* declare missing env vars in render.yaml ([8ff7fc7](https://github.com/sagar0163/upaya-jivika/commit/8ff7fc7984bd805802d52de19a724ca44440396a))
+* **deploy:** install playwright chromium binary during build ([5e832e3](https://github.com/sagar0163/upaya-jivika/commit/5e832e362ffa4c76df20986c6bdff7a4572d3ae9))
+* restore CARRY_FORWARD knowledge on rebirth, fix cold-archive corruption ([344b9f5](https://github.com/sagar0163/upaya-jivika/commit/344b9f5cbedbe94d6f025bd643ffd4b2920ceba5))
+* **security:** require API_AUTH_TOKEN on every mutating endpoint ([08913a4](https://github.com/sagar0163/upaya-jivika/commit/08913a4ae39414f0d9cdbe09fc3043d140b36e48))
+* **vault:** encrypt platform passwords at rest ([4c16263](https://github.com/sagar0163/upaya-jivika/commit/4c16263d2e473da159c230d70501ebab88e098c1))
+
 ## [0.4.0](https://github.com/sagar0163/upaya-jivika/compare/v0.3.0...v0.4.0) (2026-09-04)
 
 
