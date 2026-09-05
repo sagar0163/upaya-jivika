@@ -194,6 +194,25 @@
     .wallet-value.free { color: var(--accent); }
     .wallet-value.debt { color: var(--warning); }
 
+    /* Withdrawal */
+    .withdraw { grid-column: span 1; }
+    .withdraw-form { display: flex; flex-direction: column; gap: 10px; }
+    .withdraw-row { display: flex; gap: 8px; }
+    .withdraw-row select, .withdraw-row input {
+      flex: 1; padding: 10px; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--fg); font-family: var(--mono); font-size: 0.9rem;
+    }
+    .withdraw-btn {
+      padding: 10px; font-size: 0.85rem; font-weight: 600; font-family: var(--sans);
+      background: var(--accent); color: var(--bg); border: none; border-radius: 6px;
+      cursor: pointer; transition: all 0.2s;
+    }
+    .withdraw-btn:hover { background: #00e8bb; }
+    .withdraw-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .withdraw-status { font-size: 0.75rem; min-height: 1.2em; }
+    .withdraw-status.ok { color: var(--accent); }
+    .withdraw-status.err { color: var(--danger); }
+
     /* Total Earned */
     .total-earned { grid-column: span 1; }
     .total-earned .value { font-size: 2.5rem; font-weight: 700; font-family: var(--mono); color: var(--accent); }
@@ -334,6 +353,22 @@
             <div class="wallet-value debt mono" id="walletDebt">$0.00</div>
           </div>
         </div>
+      </div>
+
+      <!-- Withdrawal -->
+      <div class="card withdraw">
+        <h2>Withdraw to Bank</h2>
+        <form class="withdraw-form" id="withdrawForm">
+          <div class="withdraw-row">
+            <select id="withdrawPool">
+              <option value="free">Free Pool</option>
+              <option value="locked">Locked Pool</option>
+            </select>
+            <input type="number" id="withdrawAmount" placeholder="Amount" min="0.01" step="0.01" required>
+          </div>
+          <button type="submit" class="withdraw-btn" id="withdrawBtn">Withdraw via Payoneer</button>
+          <div class="withdraw-status" id="withdrawStatus"></div>
+        </form>
       </div>
 
       <!-- Total Earned -->
@@ -667,6 +702,42 @@
     els.rebornBtn.addEventListener('click', () => {
       els.deathOverlay.classList.remove('active');
       // The server handles reincarnation automatically; this is just dismissing the overlay
+    });
+
+    // ---- Withdrawal ----
+    const withdrawForm = document.getElementById('withdrawForm');
+    const withdrawBtn = document.getElementById('withdrawBtn');
+    const withdrawStatus = document.getElementById('withdrawStatus');
+
+    withdrawForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const pool = document.getElementById('withdrawPool').value;
+      const amount = document.getElementById('withdrawAmount').value;
+      withdrawBtn.disabled = true;
+      withdrawStatus.textContent = 'Processing…';
+      withdrawStatus.className = 'withdraw-status';
+      try {
+        const resp = await fetch('/api/withdraw', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pool, amount }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.detail || 'Withdrawal failed');
+        }
+        const statusMsg = data.payout_status === 'sent' ? 'sent to Payoneer'
+          : data.payout_status === 'queued_manual' ? 'debited — payout queued for manual processing'
+          : 'debited — payout failed, contact support';
+        withdrawStatus.textContent = `$${data.amount} ${statusMsg}`;
+        withdrawStatus.className = 'withdraw-status ok';
+        withdrawForm.reset();
+      } catch (err) {
+        withdrawStatus.textContent = err.message;
+        withdrawStatus.className = 'withdraw-status err';
+      } finally {
+        withdrawBtn.disabled = false;
+      }
     });
 
     // ---- Filter Buttons ----

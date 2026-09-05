@@ -434,7 +434,7 @@ dashboard.py         — Rich terminal UI, live status
 | ✅ | CI pipeline | **SOLVED** — `ci.yml` now runs `ruff` + `pytest` (was a Node no-op); flaky WS test fixed |
 | 🔴 | Email inbox | Needed for platform verifications + payment alerts |
 | 🟡 | CAPTCHA handling | §19 detection/escalation/blocklist + playwright-stealth built — nodriver/Camoufox/playwright-captcha not yet integrated |
-| 🔴 | Withdrawal mechanism | UI for user to move pools to real bank account |
+| 🟡 | Withdrawal mechanism | Dashboard UI + `POST /api/withdraw` built (`src/withdrawal.py`) — debits the chosen pool and requests a Payoneer payout, queuing for manual processing until `PAYONEER_API_KEY`/`PAYONEER_PROGRAM_ID` are configured |
 | 🟡 | Ethical guardrail | **SOLVED** — `src/guardrails.py` hard blacklist (spam/fake review/plagiarism/ToS violation/illegal) enforced in `task_scorer` + `task_executor` even in Terminal state |
 | 🟡 | Respawn policy | **SOLVED** (`src/respawn_policy.py`) — `FRESH_SLATE` vs `CARRY_FORWARD` of empirical task scores on rebirth |
 | 🟡 | Human approval gate | User confirm before AI spends from free pool? |

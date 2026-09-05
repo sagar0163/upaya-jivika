@@ -40,7 +40,8 @@ from src.respawn_policy import RespawnPolicyEngine
 from src.scam_detection import ScamEvent, ScamTracker
 from src.soul_crystal import LifeRecord, ReincarnationEngine
 from src.state_machine import SurvivalStateMachine
-from src.wallet import Wallet
+from src.wallet import Wallet, WalletError
+from src.withdrawal import WithdrawalError, WithdrawalPool, process_withdrawal
 
 logger = logging.getLogger(__name__)
 
@@ -564,6 +565,34 @@ class SurvivalLoop:
             result["wallet_reversal"] = {k: str(v) for k, v in reversal.items()}
         return result
 
+    # -- withdrawal (user moves wallet pools to a real bank account) --------
+
+    def process_withdrawal(self, pool: WithdrawalPool, amount: Decimal) -> dict[str, Any]:
+        """User-initiated withdrawal from ``pool`` to the user's Payoneer account.
+
+        Only ever called from the user-facing dashboard/API — the AI has no
+        code path that reaches this. Debits the wallet immediately; the
+        actual bank transfer is attempted via :mod:`src.withdrawal`'s
+        Payoneer client and may be ``queued_manual`` if payout credentials
+        aren't configured.
+        """
+        result = process_withdrawal(self.wallet, pool, amount)
+        self._event_log.append(
+            f"Withdrawal: {result.pool.value} pool -${result.amount} "
+            f"(payout={result.payout_status.value})"
+        )
+        self.cold_archive.append_event("withdrawal", result.to_dict())
+        self._persist_all()
+        self._broadcast_event("withdrawal")
+        logger.info(
+            "Withdrawal %s: $%s from %s pool (payout=%s)",
+            result.withdrawal_id,
+            result.amount,
+            result.pool.value,
+            result.payout_status.value,
+        )
+        return result.to_dict()
+
     # -- lifecycle ----------------------------------------------------------
 
     def start(self) -> None:
@@ -804,3 +833,32 @@ async def payoneer_webhook(request: Request):
 
     result = loop.record_payment(event)
     return result
+
+
+@app.post("/api/withdraw")
+async def withdraw_endpoint(request: Request):
+    """User-initiated withdrawal from a wallet pool to a real bank account.
+
+    Body: ``{"pool": "free"|"locked", "amount": "12.50"}``. This is the only
+    caller of ``SurvivalLoop.process_withdrawal`` — the AI itself has no
+    access to either pool's withdrawal methods.
+    """
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Malformed JSON body") from exc
+
+    try:
+        pool = WithdrawalPool(payload.get("pool"))
+        amount = Decimal(str(payload["amount"]))
+    except (KeyError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid withdrawal request: {exc}") from exc
+
+    try:
+        return loop.process_withdrawal(pool, amount)
+    except (WithdrawalError, WalletError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
