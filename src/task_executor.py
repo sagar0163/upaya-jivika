@@ -1183,9 +1183,8 @@ class TaskExecutor:
 
         This is the main entry point called by the agent loop.
         """
+        from src.persistence import ResearchScore, create_persistence_store
         from src.task_scorer import TaskScorer
-        from src.persistence import create_persistence_store
-        from src.research_loop import ResearchScore
 
         logger.info(f"Starting earning cycle (debt=${current_debt})")
 
@@ -1195,7 +1194,10 @@ class TaskExecutor:
         # 1. Check research data for highest-certainty task
         research_candidate = scorer.select_from_research(current_debt)
         if research_candidate:
-            logger.info(f"Selected task from research: {research_candidate.title} on {research_candidate.platform.value}")
+            logger.info(
+                f"Selected task from research: {research_candidate.title} "
+                f"on {research_candidate.platform.value}"
+            )
             # Discover real tasks on this platform
             platform_candidates = await self.discover_tasks([research_candidate.platform])
             if platform_candidates:
@@ -1205,24 +1207,35 @@ class TaskExecutor:
                     logger.info(f"Executing real task matching research: {best_real_candidate.title}")
                     research_result = await self.execute_task(best_real_candidate, certainty=min_certainty)
                     results.append(research_result)
-                    
+
                     # Feed outcome back into research data
                     store = create_persistence_store()
                     new_certainty = 0.95 if research_result.success else 0.1
                     feedback_score = ResearchScore(
                         topic="Execution Feedback",
                         query=f"Feedback for {best_real_candidate.platform.value}",
-                        findings=[{"task": best_real_candidate.title, "success": research_result.success, "earned": float(research_result.amount_earned)}],
-                        summary=f"Executed task on {best_real_candidate.platform.value}. Success: {research_result.success}, Earned: ${research_result.amount_earned}",
+                        findings=[
+                            {
+                                "task": best_real_candidate.title,
+                                "success": research_result.success,
+                                "earned": float(research_result.amount_earned),
+                            }
+                        ],
+                        summary=(
+                            f"Executed task on {best_real_candidate.platform.value}. "
+                            f"Success: {research_result.success}, Earned: ${research_result.amount_earned}"
+                        ),
                         confidence=new_certainty,
                         sources=["execution_loop"],
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                         platform_certainties={best_real_candidate.platform.value: new_certainty},
-                        task_affinities={best_real_candidate.task_type.value: 0.1 if research_result.success else -0.1}
+                        task_affinities={
+                            best_real_candidate.task_type.value: 0.1 if research_result.success else -0.1
+                        },
                     )
                     store.save_research_score(feedback_score)
                     logger.info("Feedback loop: Outcome saved to research data")
-                    
+
                     # If we executed a task from research, we might just return to avoid hitting rate limits
                     return results
 

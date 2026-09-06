@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 
@@ -42,6 +43,47 @@ class TestSoulCrystalGeneration:
         crystal = generate_soul_crystal(record)
         assert "Fiverr writing - rejected gigs" in crystal.failed_strategies
         assert "tasks taking >2 days" in crystal.avoid
+
+    def test_crystal_carries_top3_research_certainties(self):
+        """Issue #60: the feedback loop's research certainties must be carved
+        into the Soul Crystal so the *next* life starts knowing which platforms
+        the previous life's research said were most certain."""
+        from datetime import datetime, timezone
+
+        from src.persistence import InMemoryStore, ResearchScore
+
+        store = InMemoryStore()
+        store.save_research_score(
+            ResearchScore(
+                topic="earning_platforms",
+                query="clickworker",
+                findings=[],
+                summary="clickworker microtask",
+                confidence=0.95,
+                sources=[],
+                timestamp=datetime.now(timezone.utc),
+                platform_certainties={"clickworker": 0.95, "toloka": 0.8, "prolific": 0.7, "upwork": 0.4},
+                task_affinities={"microtask": 0.05, "survey": 0.05, "writing": 0.05},
+            )
+        )
+        record = LifeRecord(
+            life_number=1,
+            born_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+            total_earned=Decimal("2.00"),
+        )
+        with patch("src.persistence.create_persistence_store", return_value=store):
+            crystal = generate_soul_crystal(record)
+
+        assert crystal.platform_certainties == [
+            ("clickworker", Decimal("0.95")),
+            ("toloka", Decimal("0.80")),
+            ("prolific", Decimal("0.70")),
+        ]
+        assert crystal.task_affinities == [
+            ("microtask", Decimal("0.05")),
+            ("survey", Decimal("0.05")),
+            ("writing", Decimal("0.05")),
+        ]
 
 
 class TestDeathLog:
@@ -102,6 +144,25 @@ class TestAncestralMemory:
         assert "Life 2" in mem
         assert "Life 3" in mem
         assert "3 lives" in mem
+
+    def test_top3_certainties_rendered_into_memory(self):
+        """The next life's system prompt must actually see the inherited
+        platform certainties and task affinities (issue #60 feedback loop)."""
+        crystal = SoulCrystal(
+            life=1,
+            born=datetime(2026, 9, 1),
+            died=datetime(2026, 9, 21, tzinfo=timezone.utc),
+            lifespan_days=20,
+            total_earned=Decimal("3.20"),
+            platform_certainties=[("clickworker", Decimal("0.95")), ("toloka", Decimal("0.80"))],
+            task_affinities=[("microtask", Decimal("0.05"))],
+        )
+        mem = build_ancestral_memory([crystal])
+        assert "Top Platforms (certainty)" in mem
+        assert "clickworker (0.95)" in mem
+        assert "toloka (0.80)" in mem
+        assert "Top Task Affinities" in mem
+        assert "microtask (0.05)" in mem
 
 
 class TestReincarnationEngine:

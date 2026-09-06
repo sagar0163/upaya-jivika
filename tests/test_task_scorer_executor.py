@@ -435,6 +435,106 @@ class TestTaskScorer:
         assert score.base_certainty == Decimal("0.40")
 
 
+class TestSelectFromResearch:
+    """Issue #60: research-loop scores must drive task selection on the
+    execution leg — highest-certainty platform wins, gated by survival state."""
+
+    @staticmethod
+    def _score(pcmap, amap):
+        from datetime import datetime, timezone
+
+        from src.persistence import ResearchScore
+        return ResearchScore(
+            topic="earning_platforms",
+            query="test query",
+            findings=[],
+            summary="research summary",
+            confidence=max(pcmap.values(), default=0.0),
+            sources=[],
+            timestamp=datetime.now(timezone.utc),
+            platform_certainties=pcmap,
+            task_affinities=amap,
+        )
+
+    def _scorer_with(self, *scores):
+        from src.persistence import InMemoryStore
+        from src.task_scorer import TaskScorer
+        store = InMemoryStore()
+        for s in scores:
+            store.save_research_score(s)
+        return TaskScorer(), store
+
+    def test_returns_none_without_research(self):
+        scorer, store = self._scorer_with()
+        with patch("src.task_scorer.create_persistence_store", return_value=store):
+            assert scorer.select_from_research(Decimal("1.00")) is None
+
+    def test_picks_highest_certainty_platform(self):
+        from src.task_scorer import Platform
+        scorer, store = self._scorer_with(
+            self._score({"toloka": 0.6}, {"survey": 0.05}),
+            self._score({"clickworker": 0.95}, {"microtask": 0.05}),
+        )
+        with patch("src.task_scorer.create_persistence_store", return_value=store):
+            cand = scorer.select_from_research(Decimal("1.00"))
+
+        assert cand is not None
+        assert cand.platform == Platform.CLICKWORKER
+        assert cand.platform_certainty == Decimal("0.95")
+        assert cand.task_type.value == "microtask"
+
+    def test_affinity_shifts_task_type_for_same_platform(self):
+        """Same platform, two affinity signals — research-tagged task type wins."""
+        from src.task_scorer import TaskType
+        scorer, store = self._scorer_with(
+            self._score({"clickworker": 0.95}, {"microtask": 0.05}),
+            self._score({"clickworker": 0.95}, {"writing": 0.05}),
+        )
+        with patch("src.task_scorer.create_persistence_store", return_value=store):
+            cand = scorer.select_from_research(Decimal("1.00"))
+        assert cand is not None
+        assert cand.task_type in (TaskType.MICROTASK, TaskType.WRITING)
+
+    def test_empty_affinity_falls_back_to_platform_strengths(self):
+        """A strong platform finding with no task keywords must still be
+        selectable via the platform's default strengths (issue #60)."""
+        from src.task_scorer import Platform
+        scorer, store = self._scorer_with(
+            self._score({"clickworker": 0.95}, {}),
+        )
+        with patch("src.task_scorer.create_persistence_store", return_value=store):
+            cand = scorer.select_from_research(Decimal("1.00"))
+        assert cand is not None
+        assert cand.platform == Platform.CLICKWORKER
+
+    def test_below_threshold_returns_none(self):
+        """Struggling state (debt $6.00) gates on 0.70; a 0.5-certainty finding
+        must not be executed."""
+        scorer, store = self._scorer_with(
+            self._score({"fiverr": 0.5}, {"writing": 0.05}),
+        )
+        with patch("src.task_scorer.create_persistence_store", return_value=store):
+            assert scorer.select_from_research(Decimal("6.00")) is None
+
+    def test_unknown_platform_skipped(self):
+        scorer, store = self._scorer_with(
+            self._score({"not_a_real_platform": 0.99}, {}),
+        )
+        with patch("src.task_scorer.create_persistence_store", return_value=store):
+            assert scorer.select_from_research(Decimal("1.00")) is None
+
+    def test_survival_bonus_lifts_marginal_candidate(self):
+        """Thriving bonus (0.05) lifts a 0.85 candidate (0.6*0.95+0.4*0.9 blend)
+        past gate; the same finding under a survival-neutral state may not."""
+        scorer, store = self._scorer_with(
+            self._score({"prolific": 0.9}, {"survey": 0.05}),
+        )
+        with patch("src.task_scorer.create_persistence_store", return_value=store):
+            cand = scorer.select_from_research(Decimal("1.00"))  # thriving
+        assert cand is not None
+        assert cand.metadata["certainty_score"] is not None
+
+
 # ============================================================================
 # Test task_executor.py
 # ============================================================================

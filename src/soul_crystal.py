@@ -105,10 +105,18 @@ def generate_soul_crystal(record: LifeRecord) -> SoulCrystal:
             for t, a in rs.task_affinities.items():
                 task_aff[t] = max(task_aff.get(t, 0), a)
                 
-        # Sort and take top 3
-        top_platforms = sorted([(k, Decimal(str(v))) for k, v in plat_cert.items()], key=lambda x: x[1], reverse=True)[:3]
-        top_tasks = sorted([(k, Decimal(str(v))) for k, v in task_aff.items()], key=lambda x: x[1], reverse=True)[:3]
-    except Exception as e:
+# Sort and take top 3
+        top_platforms = sorted(
+            [(k, Decimal(str(v))) for k, v in plat_cert.items()],
+            key=lambda x: x[1],
+            reverse=True,
+        )[:3]
+        top_tasks = sorted(
+            [(k, Decimal(str(v))) for k, v in task_aff.items()],
+            key=lambda x: x[1],
+            reverse=True,
+        )[:3]
+    except Exception:
         pass
 
     return SoulCrystal(
@@ -168,9 +176,11 @@ def build_ancestral_memory(crystals: list[SoulCrystal]) -> str:
             lines.append(f"  AVOID: {avoid_item}")
         
         if c.platform_certainties:
-            lines.append(f"  Top Platforms (certainty): " + ", ".join([f"{p} ({cert:.2f})" for p, cert in c.platform_certainties]))
+            certs = ", ".join([f"{p} ({cert:.2f})" for p, cert in c.platform_certainties])
+            lines.append(f"  Top Platforms (certainty): {certs}")
         if c.task_affinities:
-            lines.append(f"  Top Task Affinities: " + ", ".join([f"{t} ({aff:.2f})" for t, aff in c.task_affinities]))
+            affs = ", ".join([f"{t} ({aff:.2f})" for t, aff in c.task_affinities])
+            lines.append(f"  Top Task Affinities: {affs}")
 
     total_lives = len(crystals)
     total_earned = sum(c.total_earned for c in crystals)

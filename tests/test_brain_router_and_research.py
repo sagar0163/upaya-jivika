@@ -596,6 +596,121 @@ class TestSurvivalResearchQueries:
             assert len(query.query) > 10
 
 
+class TestResearchScoreHelpers:
+    """Issue #60: research results must become platform-certainty + task-affinity
+    scores that the TaskScorer reads on the execution leg."""
+
+    @staticmethod
+    def _result(confidence, urls=(), summary=""):
+        from datetime import datetime, timezone
+
+        from src.research_loop import ResearchResult, ResearchTopic
+        return ResearchResult(
+            topic=ResearchTopic.EARNING_PLATFORMS,
+            query="test query",
+            findings=[{"url": u, "title": "", "snippet": "", "content": ""} for u in urls],
+            summary=summary or "research summary",
+            confidence=confidence,
+            sources=list(urls),
+            timestamp=datetime.now(timezone.utc),
+        )
+
+    def test_platform_certainties_from_finding_urls(self):
+        from src.research_loop import platform_certainties_for_result
+        result = self._result(
+            0.95,
+            urls=["https://clickworker.com/tasks", "https://toloka.ai/earn", "https://nonsense.example/"],
+        )
+        certs = platform_certainties_for_result(result)
+        assert certs["clickworker"] == 0.95
+        assert certs["toloka"] == 0.95
+        assert "nonsense" not in certs
+
+    def test_platform_certainties_empty_when_no_matching_urls(self):
+        from src.research_loop import platform_certainties_for_result
+        assert platform_certainties_for_result(self._result(0.9, urls=[])) == {}
+
+    def test_task_affinities_from_summary_keywords(self):
+        from src.research_loop import task_affinities_for_result
+        result = self._result(0.9, summary="Clickworker microtask surveys pay well")
+        aff = task_affinities_for_result(result)
+        assert aff.get("microtask") == 0.05
+        assert aff.get("survey") == 0.05
+
+    def test_task_affinities_empty_for_unrelated_summary(self):
+        from src.research_loop import task_affinities_for_result
+        assert task_affinities_for_result(self._result(0.9, summary="recipe for pasta")) == {}
+
+    def test_build_research_scores(self):
+        from src.research_loop import build_research_scores
+        scores = build_research_scores(
+            [self._result(0.9, urls=["https://upwork.com/"], summary="Upwork writing gigs")]
+        )
+        assert len(scores) == 1
+        assert scores[0].platform_certainties == {"upwork": 0.9}
+        assert scores[0].task_affinities == {"writing": 0.05}
+        assert scores[0].confidence == 0.9
+
+
+class TestPersistResearchScores:
+    """The 6 h research trigger (main.py, cron script, ResearchLoop scheduler)
+    must land scores in the store the TaskScorer reads."""
+
+    def test_persists_to_store(self):
+        from datetime import datetime, timezone
+
+        from src.persistence import InMemoryStore
+        from src.research_loop import ResearchResult, ResearchTopic, persist_research_scores
+
+        results = [
+            ResearchResult(
+                topic=ResearchTopic.EARNING_PLATFORMS,
+                query="clickworker india",
+                findings=[{"url": "https://clickworker.com/tasks", "title": "CW"}],
+                summary="Clickworker microtask pay",
+                confidence=0.95,
+                sources=["https://clickworker.com/tasks"],
+                timestamp=datetime.now(timezone.utc),
+            )
+        ]
+        store = InMemoryStore()
+        scores = persist_research_scores(results, store)
+
+        assert len(scores) == 1
+        saved = store.load_research_scores()
+        assert len(saved) == 1
+        assert saved[0].platform_certainties == {"clickworker": 0.95}
+
+    def test_empty_results_noop(self):
+        from src.persistence import InMemoryStore
+        from src.research_loop import persist_research_scores
+        store = InMemoryStore()
+        assert persist_research_scores([], store) == []
+        assert store.load_research_scores() == []
+
+    def test_defaults_to_created_store(self):
+        from datetime import datetime, timezone
+
+        from src.research_loop import ResearchResult, ResearchTopic, persist_research_scores
+
+        results = [
+            ResearchResult(
+                topic=ResearchTopic.EARNING_PLATFORMS,
+                query="clickworker",
+                findings=[{"url": "https://clickworker.com/tasks", "title": "CW"}],
+                summary="clickworker",
+                confidence=0.9,
+                sources=[],
+                timestamp=datetime.now(timezone.utc),
+            )
+        ]
+        with patch("src.research_loop.create_persistence_store") as mock_create:
+            mock_store = mock_create.return_value
+            persist_research_scores(results)
+            mock_create.assert_called_once()
+            assert mock_store.save_research_score.call_count == 1
+
+
 # ============================================================================
 # Integration-style tests
 # ============================================================================

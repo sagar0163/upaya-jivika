@@ -14,10 +14,10 @@ from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from src.persistence import create_persistence_store, ResearchScore
 
 from src.audit_trail import AuditTrail
 from src.guardrails import EthicalGuardrail, GuardrailVerdict, get_guardrail
+from src.persistence import create_persistence_store
 from src.state_machine import State, min_certainty, resolve_state
 
 
@@ -322,86 +322,137 @@ class TaskScorer:
 
         Queries the research score DB and returns the best task candidate
         based on platform certainty and task affinity, filtered by the current
-        survival state's minimum certainty threshold.
+        survival state's minimum certainty threshold. This is the task-selection
+        leg of the research → execution → feedback loop (issue #60): the
+        research loop writes platform-certainty scores on every 6 h trigger,
+        this method turns the highest one into a concrete candidate to execute.
         """
-        from src.task_scorer import TaskCandidate, Platform as EarningPlatform, TaskType, PaymentMethod
-        
         persistence = create_persistence_store()
         research_scores = persistence.load_research_scores()
-        
+
         if not research_scores:
             return None
-        
+
         # Get the minimum certainty threshold for current state
         threshold = min_certainty(current_debt)
-        
-        # Score each research result and find the best platform/task combo
-        best_score = Decimal('0')
+
+        research_weight = Decimal("0.6")
+        platform_weight = Decimal("0.4")
+        survival_bonus = self._survival_bonus_for_state(resolve_state(current_debt))
+
+        best_score = Decimal("0")
         best_candidate = None
-        
+
         for rs in research_scores:
             # Use research platform certainties if available
             research_certainties = rs.platform_certainties or {}
             research_affinities = rs.task_affinities or {}
-            
-            # Consider each platform with its certainty
+            parsed_affinities = self._parsed_affinities(research_affinities)
+
             for platform_str, certainty in research_certainties.items():
                 try:
-                    platform = EarningPlatform(platform_str)
+                    platform = Platform(platform_str)
                 except ValueError:
                     continue
-                
-                # Get base certainty from platform table
+
+                # Base certainty from platform table
                 platform_data = PLATFORM_DATA.get(platform)
-                if platform_data:
-                    base_certainty = platform_data[0]  # base_certainty
-                else:
-                    base_certainty = Decimal('0.5')
-                
+                base_certainty = platform_data[0] if platform_data else Decimal("0.5")
+                payment_method = platform_data[2] if platform_data else PaymentMethod.PAYONEER
+                typical_pay = platform_data[1] if platform_data else Decimal("1.00")
+
                 # Combine research certainty with base certainty
-                research_weight = Decimal('0.6')
-                platform_weight = Decimal('0.4')
-                combined = (certainty * research_weight + float(base_certainty) * platform_weight)
-                combined_decimal = Decimal(str(combined)).quantize(Decimal('0.01'))
-                
-                # Apply affinity bonus if task type matches
-                for task_type_str, affinity in research_affinities.items():
-                    try:
-                        task_type = TaskType(task_type_str)
-                    except ValueError:
-                        continue
-                    
-                    if task_type in PLATFORM_TASK_AFFINITY.get(platform, []):
-                        final = min(combined_decimal + Decimal(str(affinity)), Decimal('1.0'))
-                    else:
-                        final = combined_decimal
-                    
-                    # Apply survival state adjustment
-                    state = resolve_state(current_debt)
-                    survival_bonus = Decimal('0')
-                    if state == State.THRIVING:
-                        survival_bonus = Decimal('0.05')
-                    elif state == State.SURVIVING:
-                        survival_bonus = Decimal('0.02')
-                    
-                    total = min(final + survival_bonus, Decimal('1.0'))
-                    
+                try:
+                    research_cert = Decimal(str(certainty))
+                except (ValueError, TypeError):
+                    continue
+                combined_certainty = min(
+                    research_cert * research_weight + base_certainty * platform_weight,
+                    Decimal("1.0"),
+                ).quantize(Decimal("0.01"))
+
+                # Determine which task types to consider. Prefer the task types
+                # the research itself flagged; if research gave none, fall back
+                # to the platform's known strengths so a high-certainty platform
+                # with an empty affinity map is still selectable.
+                candidate_types = self._candidate_task_types(
+                    platform, parsed_affinities
+                )
+                if not candidate_types:
+                    continue
+
+                for task_type, affinity in candidate_types:
+                    total = min(
+                        combined_certainty + affinity + survival_bonus,
+                        Decimal("1.0"),
+                    ).quantize(Decimal("0.01"))
+
                     if total >= threshold and total > best_score:
                         best_score = total
-                        # Create candidate
                         best_candidate = TaskCandidate(
                             platform=platform,
                             task_type=task_type,
                             title=f"Research: {rs.topic} - {rs.query[:50]}",
-                            estimated_pay=Decimal('1.00'),
-                            estimated_hours=Decimal('1.0'),
-                            payment_method=PaymentMethod.PAYONEER,
-                            platform_certainty=Decimal(str(certainty)),
-                            source_url='',
-                            metadata={'research_score': rs.topic, 'confidence': rs.confidence},
+                            estimated_pay=typical_pay,
+                            estimated_hours=Decimal("1.0"),
+                            payment_method=payment_method,
+                            platform_certainty=research_cert,
+                            source_url="",
+                            metadata={
+                                "research_score": rs.topic,
+                                "confidence": rs.confidence,
+                                "certainty_score": str(total),
+                            },
                         )
-        
+
         return best_candidate
+
+    @staticmethod
+    def _survival_bonus_for_state(state: State) -> Decimal:
+        """Deterministic survival bonus applied in select_from_research."""
+        if state == State.THRIVING:
+            return Decimal("0.05")
+        if state == State.SURVIVING:
+            return Decimal("0.02")
+        return Decimal("0.0")
+
+    @staticmethod
+    def _parsed_affinities(
+        research_affinities: dict[str, float],
+    ) -> dict[TaskType, Decimal]:
+        """Parse research affinities into ``{TaskType: Decimal bonus}``."""
+        parsed: dict[TaskType, Decimal] = {}
+        for task_type_str, affinity in research_affinities.items():
+            try:
+                task_type = TaskType(task_type_str)
+            except ValueError:
+                continue
+            try:
+                parsed[task_type] = Decimal(str(affinity))
+            except (ValueError, TypeError):
+                continue
+        return parsed
+
+    @staticmethod
+    def _candidate_task_types(
+        platform: Platform,
+        parsed_affinities: dict[TaskType, Decimal],
+    ) -> list[tuple[TaskType, Decimal]]:
+        """Return ``[(TaskType, affinity_bonus)]`` to evaluate for a platform.
+
+        Research-flagged task types are preferred; when the research gave none,
+        the platform's default strengths from :data:`PLATFORM_TASK_AFFINITY`
+        are used so selection still works (no affinity is added then).
+        """
+        valid_affinities = [
+            (t, a) for t, a in parsed_affinities.items()
+            if t in PLATFORM_TASK_AFFINITY.get(platform, [])
+        ]
+        if valid_affinities:
+            return valid_affinities
+        # No research affinity matched this platform — fall back to the
+        # platform's default task strengths with no bonus.
+        return [(t, Decimal("0.0")) for t in PLATFORM_TASK_AFFINITY.get(platform, [])]
 
 
 # Convenience function

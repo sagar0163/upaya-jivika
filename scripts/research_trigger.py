@@ -12,7 +12,7 @@ import sys
 sys.path.insert(0, '.')
 
 from src.persistence import create_persistence_store
-from src.research_loop import ResearchAgent
+from src.research_loop import ResearchAgent, persist_research_scores
 
 
 async def main() -> int:
@@ -24,6 +24,12 @@ async def main() -> int:
     try:
         print("Research cycle starting...")
         results = await agent.research_earning_platforms()
+
+        # Persist platform certainties / task affinities so the TaskScorer's
+        # select_from_research sees fresh research data after every 6 h run
+        # (issue #60 closed loop).
+        scores = persist_research_scores(results, store)
+        print(f"Persisted {len(scores)} platform-certainty score(s) to DB")
 
         # Persist results to the shared event log so they are consistent
         # whether the cycle ran via APScheduler in the live app or via cron.

@@ -24,7 +24,7 @@ from src.brain_router import (
     TaskType,
     get_brain_router,
 )
-from src.persistence import create_persistence_store, ResearchScore
+from src.persistence import ResearchScore, create_persistence_store
 
 logger = logging.getLogger(__name__)
 
@@ -350,6 +350,105 @@ Analyze and synthesize."""
         await self.reader.close()
 
 
+# ---------------------------------------------------------------------------
+# Research-score persistence (issue #60: research → execution → feedback)
+# ---------------------------------------------------------------------------
+
+def platform_certainties_for_result(result: ResearchResult) -> dict[str, float]:
+    """Extract ``platform -> certainty`` from a research result's top findings.
+
+    A platform earns the result's overall confidence when at least one of the
+    top findings came from that platform (the URLs are the best signal of which
+    earning platform the web results were actually about).
+    """
+    certainties: dict[str, float] = {}
+    for finding in result.findings[:3]:
+        url = (finding.get("url") or "").lower()
+        if not url:
+            continue
+        if "clickworker" in url:
+            certainties["clickworker"] = result.confidence
+        elif "toloka" in url:
+            certainties["toloka"] = result.confidence
+        elif "prolific" in url:
+            certainties["prolific"] = result.confidence
+        elif "appen" in url or "dataannotation" in url:
+            certainties["appen"] = result.confidence
+        elif "upwork" in url:
+            certainties["upwork"] = result.confidence
+        elif "fiverr" in url:
+            certainties["fiverr"] = result.confidence
+        elif "github" in url or "gitcoin" in url:
+            certainties["github_bounties"] = result.confidence
+    return certainties
+
+
+def task_affinities_for_result(result: ResearchResult) -> dict[str, float]:
+    """Extract ``task_type -> affinity`` from a research summary's keywords.
+
+    Affinity is a small additive bonus the TaskScorer applies — it reflects
+    which *kind* of task this research suggests is worth attempting. Values
+    are kept modest so research alone can never push an unproven platform
+    past the certainty gate.
+    """
+    summary_lower = (result.summary or "").lower()
+    affinities: dict[str, float] = {}
+    if "microtask" in summary_lower or "clickworker" in summary_lower:
+        affinities["microtask"] = 0.05
+    if "survey" in summary_lower or "prolific" in summary_lower:
+        affinities["survey"] = 0.05
+    if "data annotation" in summary_lower or "appen" in summary_lower:
+        affinities["data_annotation"] = 0.05
+    if "writing" in summary_lower or "upwork" in summary_lower or "fiverr" in summary_lower:
+        affinities["writing"] = 0.05
+    if "coding" in summary_lower or "github" in summary_lower or "gitcoin" in summary_lower:
+        affinities["coding"] = 0.05
+    return affinities
+
+
+def build_research_scores(results: list[ResearchResult]) -> list[ResearchScore]:
+    """Convert :class:`ResearchResult` objects into persistable scores.
+
+    Each score carries the platform certainties and task affinities that the
+    TaskScorer later reads to pick the highest-certainty task (issue #60).
+    """
+    scores: list[ResearchScore] = []
+    for result in results:
+        scores.append(
+            ResearchScore(
+                topic=result.topic.value,
+                query=result.query,
+                findings=result.findings,
+                summary=result.summary,
+                confidence=result.confidence,
+                sources=result.sources,
+                timestamp=result.timestamp,
+                platform_certainties=platform_certainties_for_result(result),
+                task_affinities=task_affinities_for_result(result),
+            )
+        )
+    return scores
+
+
+def persist_research_scores(
+    results: list[ResearchResult], store: Optional[Any] = None
+) -> list[ResearchScore]:
+    """Save research results into the DB for the feedback loop.
+
+    This is the single place research learns from: every trigger path (the
+    embedded 6 h scheduler in ``main.py``, the standalone cron script, and the
+    :class:`ResearchLoop` scheduler) writes platform-certainty scores here so
+    the TaskScorer's ``select_from_research`` sees fresh data each cycle.
+    """
+    if not results:
+        return []
+    store = store or create_persistence_store()
+    scores = build_research_scores(results)
+    for score in scores:
+        store.save_research_score(score)
+    return scores
+
+
 class ResearchLoop:
     """Main research loop scheduler."""
 
@@ -434,64 +533,16 @@ class ResearchLoop:
                     f"Sources: {len(result.sources)}"
                 )
 
-            # Save platform certainties and task affinities to DB for feedback loop
-            persistence = create_persistence_store()
-            for result in results:
-                # Extract platform certainties from findings and summary
-                platform_certainties = {}
-                task_affinities = {}
-                
-                # Build platform certainties from research findings
-                for finding in result.findings[:3]:  # Top 3 findings
-                    url = finding.get('url', '')
-                    if 'clickworker' in url.lower():
-                        platform_certainties['clickworker'] = result.confidence
-                    elif 'toloka' in url.lower():
-                        platform_certainties['toloka'] = result.confidence
-                    elif 'prolific' in url.lower():
-                        platform_certainties['prolific'] = result.confidence
-                    elif 'appen' in url.lower() or 'dataannotation' in url.lower():
-                        platform_certainties['appen'] = result.confidence
-                    elif 'upwork' in url.lower():
-                        platform_certainties['upwork'] = result.confidence
-                    elif 'fiverr' in url.lower():
-                        platform_certainties['fiverr'] = result.confidence
-                    elif 'github' in url.lower() or 'gitcoin' in url.lower():
-                        platform_certainties['github_bounties'] = result.confidence
-                
-                # Build task affinities from summary keywords
-                summary_lower = result.summary.lower()
-                if 'microtask' in summary_lower or 'clickworker' in summary_lower:
-                    task_affinities['microtask'] = 0.05
-                if 'survey' in summary_lower or 'prolific' in summary_lower:
-                    task_affinities['survey'] = 0.05
-                if 'data annotation' in summary_lower or 'appen' in summary_lower:
-                    task_affinities['data_annotation'] = 0.05
-                if 'writing' in summary_lower or 'upwork' in summary_lower or 'fiverr' in summary_lower:
-                    task_affinities['writing'] = 0.05
-                if 'coding' in summary_lower or 'github' in summary_lower or 'gitcoin' in summary_lower:
-                    task_affinities['coding'] = 0.05
-                if 'payrate' in summary_lower or 'pay' in summary_lower:
-                    task_affinities['pay_rate_bonus'] = 0.03
-
-                research_score = ResearchScore(
-                    topic=result.topic.value,
-                    query=result.query,
-                    findings=result.findings,
-                    summary=result.summary,
-                    confidence=result.confidence,
-                    sources=result.sources,
-                    timestamp=result.timestamp,
-                    platform_certainties=platform_certainties,
-                    task_affinities=task_affinities,
-                )
-                persistence.save_research_score(research_score)
-
-            # In a real system, this would feed into task_scorer.py
-            # For now, just log
-            logger.info(f"Research cycle complete. {len(results)} topics researched.")
-            # Platform certainties and task affinities are now saved to DB
-            # for the task scorer to use in future task selection
+            # Save platform certainties and task affinities to DB — this is the
+            # research leg of the closed loop: the TaskScorer reads these back
+            # to pick the highest-certainty task (issue #60).
+            scores = persist_research_scores(results)
+            logger.info(
+                "Research cycle complete. %d topics researched, %d platform "
+                "certainties saved to DB for task selection.",
+                len(results),
+                len(scores),
+            )
 
         except Exception as e:
             logger.error(f"Research cycle failed: {e}")

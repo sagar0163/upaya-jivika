@@ -45,7 +45,7 @@ from src.payoneer_webhook import (
     verify_signature,
 )
 from src.persistence import PersistenceStore, create_persistence_store
-from src.research_loop import ResearchAgent
+from src.research_loop import ResearchAgent, persist_research_scores
 from src.respawn_policy import RespawnPolicyEngine
 from src.scam_detection import ScamEvent, ScamTracker, ScamType
 from src.soul_crystal import LifeRecord, ReincarnationEngine
@@ -443,6 +443,12 @@ class SurvivalLoop:
         try:
             logger.info("Research cycle starting")
             results = await self.research.research_earning_platforms()
+            persisted = persist_research_scores(results, self.persistence)
+            logger.info(
+                "Research cycle complete: %d topics, %d certainties persisted",
+                len(results),
+                len(persisted),
+            )
             for r in results:
                 self._event_log.append(
                     f"Research: {r.topic.value} (confidence {r.confidence:.2f})"
@@ -456,7 +462,6 @@ class SurvivalLoop:
                     },
                 )
             self._persist_all()
-            logger.info("Research cycle complete: %d topics", len(results))
             if self.ws_manager:
                 status = self.get_status()
                 status["event"] = "research_cycle"

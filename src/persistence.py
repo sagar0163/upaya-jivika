@@ -10,6 +10,7 @@ import logging
 import os
 import threading
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -105,7 +106,43 @@ def _soul_crystal_to_dict(c: SoulCrystal) -> dict[str, Any]:
         "avoid": c.avoid,
         "key_lessons": c.key_lessons,
         "cause_of_death": c.cause_of_death,
+        # Ancestral-memory carry-over (issue #60): top-3 platform certainties
+        # and task affinities learned this life, so a reborn life starts with
+        # quantitative knowledge of what research deemed most certain.
+        "platform_certainties": [
+            {"platform": p, "certainty": str(v)} for p, v in c.platform_certainties
+        ],
+        "task_affinities": [
+            {"task_type": t, "affinity": str(v)} for t, v in c.task_affinities
+        ],
     }
+
+
+def _top3_from_dict(raw: Any, key_field: str, value_field: str) -> list[tuple[str, Decimal]]:
+    """Decode a persisted top-3 list into ``[(name, Decimal), ...]``.
+
+    Accepts the current ``[{"platform": p, "certainty": s}]`` shape as well as
+    the legacy ``[[p, s]]`` pair-list shape, and silently ignores anything
+    unparseable so old archives never break reincarnation.
+    """
+    if not isinstance(raw, list):
+        return []
+    result: list[tuple[str, Decimal]] = []
+    for item in raw:
+        try:
+            if isinstance(item, dict):
+                name = item.get(key_field)
+                value = item.get(value_field)
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                name, value = item
+            else:
+                continue
+            if name is None or value is None:
+                continue
+            result.append((str(name), Decimal(str(value))))
+        except (ValueError, TypeError, ArithmeticError):
+            continue
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +178,7 @@ def _research_score_to_dict(s: ResearchScore) -> dict[str, Any]:
 
 
 def _research_score_from_dict(d: dict[str, Any]) -> ResearchScore:
-    ts = datetime.fromisoformat(d["timestamp"]) if d.get("timestamp") else datetime.utcnow()
+    ts = datetime.fromisoformat(d["timestamp"]) if d.get("timestamp") else datetime.now(timezone.utc)
     return ResearchScore(
         topic=d["topic"],
         query=d["query"],
@@ -169,6 +206,12 @@ def _soul_crystal_from_dict(d: dict[str, Any]) -> SoulCrystal:
         avoid=d.get("avoid", []),
         key_lessons=d.get("key_lessons", []),
         cause_of_death=d.get("cause_of_death", ""),
+        platform_certainties=_top3_from_dict(
+            d.get("platform_certainties", []), "platform", "certainty"
+        ),
+        task_affinities=_top3_from_dict(
+            d.get("task_affinities", []), "task_type", "affinity"
+        ),
     )
 
 
@@ -176,57 +219,18 @@ def _soul_crystal_from_dict(d: dict[str, Any]) -> SoulCrystal:
 # Abstract store
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Research Score serialisation (for research → execution → feedback loop)
-# ---------------------------------------------------------------------------
-
-class ResearchScore(BaseModel):
-    """A research result with platform certainty scores."""
-
-    topic: str
-    query: str
-    findings: list[dict[str, Any]]
-    summary: str
-    confidence: float
-    sources: list[str]
-    timestamp: datetime | None = None
-    platform_certainties: dict[str, float] = Field(default_factory=dict)  # platform -> certainty
-    task_affinities: dict[str, float] = Field(default_factory=dict)  # task_type -> affinity
-
-
-def _research_score_to_dict(s: ResearchScore) -> dict[str, Any]:
-    return {
-        "topic": s.topic,
-        "query": s.query,
-        "findings": s.findings,
-        "summary": s.summary,
-        "confidence": s.confidence,
-        "sources": s.sources,
-        "timestamp": s.timestamp.isoformat() if s.timestamp else None,
-        "platform_certainties": s.platform_certainties,
-        "task_affinities": s.task_affinities,
-    }
-
-
-def _research_score_from_dict(d: dict[str, Any]) -> ResearchScore:
-    ts = datetime.fromisoformat(d["timestamp"]) if d.get("timestamp") else datetime.utcnow()
-    return ResearchScore(
-        topic=d["topic"],
-        query=d["query"],
-        findings=d["findings"],
-        summary=d["summary"],
-        confidence=d["confidence"],
-        sources=d["sources"],
-        timestamp=ts,
-        platform_certainties=d.get("platform_certainties", {}),
-        task_affinities=d.get("task_affinities", {}),
-    )
 
 class PersistenceStore(ABC):
     """Abstract interface for hot-memory persistence."""
 
     @abstractmethod
     def save_debt_state(self, state: DebtState) -> None: ...
+
+    @abstractmethod
+    def save_research_score(self, score: ResearchScore) -> None: ...
+
+    @abstractmethod
+    def load_research_scores(self) -> list[ResearchScore]: ...
 
     @abstractmethod
     def load_debt_state(self) -> Optional[DebtState]: ...
@@ -434,11 +438,7 @@ class InMemoryStore(PersistenceStore):
     def delete_pending_spend(self, spend_id: str) -> None:
         self._pending_spends.pop(spend_id, None)
 
-
-# ---------------------------------------------------------------------------
-# Supabase-backed store
-# ---------------------------------------------------------------------------
-
+    # -- research_scores (issue #60: research → execution → feedback) ---------
 
     def save_research_score(self, score: ResearchScore) -> None:
         """Save a research score to the store."""
@@ -447,6 +447,11 @@ class InMemoryStore(PersistenceStore):
     def load_research_scores(self) -> list[ResearchScore]:
         """Load all research scores from the store."""
         return [_research_score_from_dict(d) for d in self._research_scores]
+
+
+# ---------------------------------------------------------------------------
+# Supabase-backed store
+# ---------------------------------------------------------------------------
 
 
 class SupabaseStore(PersistenceStore):
@@ -521,6 +526,11 @@ class SupabaseStore(PersistenceStore):
             data  JSONB NOT NULL,
             created_at TIMESTAMPTZ DEFAULT now()
         );
+        CREATE TABLE IF NOT EXISTS research_scores (
+            id    BIGSERIAL PRIMARY KEY,
+            data  JSONB NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now()
+        );
         """
         try:
             self._client.rpc("exec_sql", {"query": ddl}).execute()
@@ -588,6 +598,14 @@ class SupabaseStore(PersistenceStore):
 
     def load_soul_crystals(self) -> list[SoulCrystal]:
         return [_soul_crystal_from_dict(d) for d in self._load_all("soul_crystals")]
+
+    # -- research_scores ----------------------------------------------------
+
+    def save_research_score(self, score: ResearchScore) -> None:
+        self._append("research_scores", _research_score_to_dict(score))
+
+    def load_research_scores(self) -> list[ResearchScore]:
+        return [_research_score_from_dict(d) for d in self._load_all("research_scores")]
 
     # -- events -------------------------------------------------------------
 
@@ -685,4 +703,3 @@ def create_persistence_store() -> PersistenceStore:
     logger.info("No SUPABASE_URL/KEY — using in-memory persistence")
     return InMemoryStore()
 
-# -- research scores ---------------------------------------------------------\n\nclass ResearchScore(BaseModel):\n    \"\"\"A research result with platform certainty scores.\"\"\"\n\n    topic: str\n    query: str\n    findings: list[dict[str, Any]]\n    summary: str\n    confidence: float\n    sources: list[str]\n    timestamp: datetime\n    platform_certainties: dict[str, float] = Field(default_factory=dict)  # platform -> certainty\n    task_affinities: dict[str, float] = Field(default_factory=dict)  # task_type -> affinity\n\n\ndef _research_score_to_dict(s: ResearchScore) -> dict[str, Any]:\n    return {\n        \"topic\": s.topic,\n        \"query\": s.query,\n        \"findings\": s.findings,\n        \"summary\": s.summary,\n        \"confidence\": s.confidence,\n        \"sources\": s.sources,\n        \"timestamp\": s.timestamp.isoformat() if s.timestamp else None,\n        \"platform_certainties\": s.platform_certainties,\n        \"task_affinities\": s.task_affinities,\n    }\n\n\ndef _research_score_from_dict(d: dict[str, Any]) -> ResearchScore:\n    ts = datetime.fromisoformat(d[\"timestamp\"]) if d.get(\"timestamp\") else datetime.utcnow()\n    return ResearchScore(\n        topic=d[\"topic\"],\n        query=d[\"query\"],\n        findings=d[\"findings\"],\n        summary=d[\"summary\"],\n        confidence=d[\"confidence\"],\n        sources=d[\"sources\"],\n        timestamp=ts,\n        platform_certainties=d.get(\"platform_certainties\", {}),\n        task_affinities=d.get(\"task_affinities\", {}),\n    )\n\n# -- In-memory store research methods ----------------------------------------\n\nclass InMemoryStore(PersistenceStore):\n    \"\"\"Dict-backed store for local dev and testing.\"\"\"\n\n    # ... existing code ...\n\n    def save_research_score(self, score: ResearchScore) -> None:\n        self._research_scores.append(_research_score_to_dict(score))\n\n    def load_research_scores(self) -> list[ResearchScore]:\n        return [_research_score_from_dict(d) for d in self._research_scores]\n\n    # -- Supabase-backed store research methods --------------------------------\n\n    def _append_research(self, table: str, data: dict) -> None:\n        self._client.table(table).insert({\"data\": data}).execute()\n\n    def save_research_score(self, score: ResearchScore) -> None:\n        self._append_research(\"research_scores\", _research_score_to_dict(score))\n\n    def load_research_scores(self) -> list[ResearchScore]:\n        rows = self._load_all(\"research_scores\")\n        return [_research_score_from_dict(r) for r in rows]\n\n# -- Factory update ---------------------------------------------------------\n\ndef create_persistence_store() -> PersistenceStore:\n    \"\"\"Return a SupabaseStore when credentials exist, else InMemoryStore.\"\"\"\n    if os.environ.get(\"SUPABASE_URL\") and os.environ.get(\"SUPABASE_KEY\"):\n        logger.info(\"Using Supabase-backed persistence\")\n        return SupabaseStore()\n    logger.info(\"No SUPABASE_URL/KEY — using in-memory persistence\")\n    return InMemoryStore()\nEOF

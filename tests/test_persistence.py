@@ -9,12 +9,16 @@ import pytest
 from src.debt_engine import DebtState, DifficultyMode
 from src.persistence import (
     InMemoryStore,
+    ResearchScore,
     _debt_state_from_dict,
     _debt_state_to_dict,
     _life_record_from_dict,
     _life_record_to_dict,
+    _research_score_from_dict,
+    _research_score_to_dict,
     _soul_crystal_from_dict,
     _soul_crystal_to_dict,
+    _top3_from_dict,
     _wallet_from_dict,
     _wallet_to_dict,
     create_persistence_store,
@@ -160,6 +164,210 @@ class TestSoulCrystalSerialization:
         assert restored.total_earned == Decimal("3.20")
         assert restored.best_platform == "Clickworker"
         assert restored.key_lessons == ["lesson1"]
+
+    def test_roundtrip_top3_certainties_and_affinities(self):
+        """Ancestral-memory carry-over (issue #60): the top-3 platform
+        certainties and task affinities a life learned must survive
+        serialisation, or the reborn life can never inherit them."""
+        crystal = SoulCrystal(
+            life=2,
+            born=datetime(2026, 9, 1, tzinfo=timezone.utc),
+            died=datetime(2026, 9, 10, tzinfo=timezone.utc),
+            lifespan_days=9.0,
+            total_earned=Decimal("4.00"),
+            platform_certainties=[
+                ("clickworker", Decimal("0.95")),
+                ("toloka", Decimal("0.80")),
+                ("prolific", Decimal("0.70")),
+            ],
+            task_affinities=[
+                ("microtask", Decimal("0.05")),
+                ("survey", Decimal("0.05")),
+            ],
+        )
+        d = _soul_crystal_to_dict(crystal)
+        restored = _soul_crystal_from_dict(d)
+        assert restored.platform_certainties == [
+            ("clickworker", Decimal("0.95")),
+            ("toloka", Decimal("0.80")),
+            ("prolific", Decimal("0.70")),
+        ]
+        assert restored.task_affinities == [
+            ("microtask", Decimal("0.05")),
+            ("survey", Decimal("0.05")),
+        ]
+
+    def test_soul_crystal_missing_carryover_defaults_to_empty(self):
+        """Old archived crystals (pre-#60) simply carry no certainties."""
+        d = {
+            "life": 1,
+            "born": datetime(2026, 9, 1, tzinfo=timezone.utc).isoformat(),
+            "died": datetime(2026, 9, 21, tzinfo=timezone.utc).isoformat(),
+            "lifespan_days": 20.0,
+            "total_earned": "1.00",
+        }
+        restored = _soul_crystal_from_dict(d)
+        assert restored.platform_certainties == []
+        assert restored.task_affinities == []
+
+
+class TestTop3FromDict:
+    def test_current_dict_shape(self):
+        raw = [
+            {"platform": "clickworker", "certainty": "0.95"},
+            {"platform": "toloka", "certainty": "0.80"},
+        ]
+        assert _top3_from_dict(raw, "platform", "certainty") == [
+            ("clickworker", Decimal("0.95")),
+            ("toloka", Decimal("0.80")),
+        ]
+
+    def test_legacy_pair_list_shape(self):
+        raw = [["clickworker", "0.95"], ["toloka", "0.80"]]
+        assert _top3_from_dict(raw, "platform", "certainty") == [
+            ("clickworker", Decimal("0.95")),
+            ("toloka", Decimal("0.80")),
+        ]
+
+    def test_unparseable_items_skipped(self):
+        raw = [
+            {"platform": "clickworker", "certainty": "0.95"},
+            {"platform": None, "certainty": "0.5"},
+            "garbage",
+            [1, 2, 3],
+            {"platform": "toloka", "certainty": "not-a-number"},
+        ]
+        assert _top3_from_dict(raw, "platform", "certainty") == [
+            ("clickworker", Decimal("0.95"))
+        ]
+
+    def test_non_list_returns_empty(self):
+        assert _top3_from_dict(None, "platform", "certainty") == []
+        assert _top3_from_dict("nope", "platform", "certainty") == []
+
+
+# ---------------------------------------------------------------------------
+# ResearchScore (issue #60 research → execution → feedback loop)
+# ---------------------------------------------------------------------------
+
+def _make_research_score(**overrides):
+    """Build a ResearchScore with sensible defaults for tests."""
+    base = {
+        "topic": "earning_platforms",
+        "query": "clickworker india pay rate",
+        "findings": [{"url": "https://clickworker.com/tasks", "title": "CW"}],
+        "summary": "Clickworker microtasks pay via Payoneer",
+        "confidence": 0.95,
+        "sources": ["https://clickworker.com/tasks"],
+        "timestamp": datetime(2026, 9, 6, tzinfo=timezone.utc),
+        "platform_certainties": {"clickworker": 0.95},
+        "task_affinities": {"microtask": 0.05},
+    }
+    base.update(overrides)
+    return ResearchScore(**base)
+
+
+class TestResearchScoreSerialization:
+    def test_roundtrip_to_dict(self):
+        score = _make_research_score()
+        d = _research_score_to_dict(score)
+        assert d["topic"] == "earning_platforms"
+        assert d["platform_certainties"] == {"clickworker": 0.95}
+        assert d["task_affinities"] == {"microtask": 0.05}
+
+        restored = _research_score_from_dict(d)
+        assert restored.topic == "earning_platforms"
+        assert restored.confidence == 0.95
+        assert restored.platform_certainties == {"clickworker": 0.95}
+        assert restored.task_affinities == {"microtask": 0.05}
+        assert restored.timestamp == score.timestamp
+
+    def test_from_dict_missing_timestamp_uses_now(self):
+        d = _research_score_to_dict(_make_research_score())
+        d.pop("timestamp")
+        restored = _research_score_from_dict(d)
+        assert restored.timestamp is not None  # defaulted rather than crashing
+
+    def test_from_dict_missing_optional_maps_default(self):
+        d = _research_score_to_dict(_make_research_score())
+        del d["platform_certainties"]
+        del d["task_affinities"]
+        restored = _research_score_from_dict(d)
+        assert restored.platform_certainties == {}
+        assert restored.task_affinities == {}
+
+
+class TestInMemoryResearchScores:
+    def test_save_then_load_roundtrip(self):
+        store = InMemoryStore()
+        store.save_research_score(_make_research_score())
+        loaded = store.load_research_scores()
+        assert len(loaded) == 1
+        assert loaded[0].platform_certainties == {"clickworker": 0.95}
+        assert loaded[0].task_affinities == {"microtask": 0.05}
+
+    def test_load_empty(self):
+        assert InMemoryStore().load_research_scores() == []
+
+    def test_multiple_scores_accumulate(self):
+        """Feedback loop: execution outcomes append new scores; they must
+        accumulate (not overwrite) so the scorer sees both research and
+        execution-feedback certainties."""
+        store = InMemoryStore()
+        store.save_research_score(
+            _make_research_score(topic="earning_platforms", platform_certainties={"clickworker": 0.95})
+        )
+        # Simulated execution feedback (success: certainty up to 0.95)
+        store.save_research_score(
+            _make_research_score(
+                topic="Execution Feedback",
+                summary="Executed task on clickworker. Success: True",
+                platform_certainties={"clickworker": 0.95},
+            )
+        )
+        assert len(store.load_research_scores()) == 2
+
+
+class TestSupabaseResearchScores:
+    def test_save_appends_to_research_scores_table(self):
+        """SupabaseStore.save_research_score inserts into research_scores."""
+        from unittest.mock import MagicMock
+
+        import src.persistence as persistence_mod
+
+        store = persistence_mod.SupabaseStore.__new__(persistence_mod.SupabaseStore)
+        client = MagicMock()
+        store._client = client
+        table_mock = MagicMock()
+        client.table.return_value = table_mock
+
+        store.save_research_score(_make_research_score())
+
+        client.table.assert_called_with("research_scores")
+        table_mock.insert.assert_called_once()
+        args = table_mock.insert.call_args[0][0]
+        assert args["data"]["platform_certainties"] == {"clickworker": 0.95}
+
+    def test_load_reads_research_scores_table(self):
+        from unittest.mock import MagicMock
+
+        import src.persistence as persistence_mod
+
+        store = persistence_mod.SupabaseStore.__new__(persistence_mod.SupabaseStore)
+        client = MagicMock()
+        store._client = client
+        table_mock = MagicMock()
+        client.table.return_value = table_mock
+        table_mock.select.return_value = table_mock
+        table_mock.order.return_value = table_mock
+        table_mock.execute.return_value = MagicMock(
+            data=[{"data": _research_score_to_dict(_make_research_score())}]
+        )
+
+        loaded = store.load_research_scores()
+
+        assert len(loaded) == 1
+        assert loaded[0].platform_certainties == {"clickworker": 0.95}
 
 
 # ---------------------------------------------------------------------------
