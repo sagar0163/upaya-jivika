@@ -1117,8 +1117,46 @@ async def payoneer_webhook(request: Request):
     except PayoneerWebhookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    result = loop.record_payment(event)
-    return result
+    # Implement retry logic for webhook failures (e.g. transient DB issues)
+    retries = 3
+    for attempt in range(retries):
+        try:
+            result = loop.record_payment(event)
+            return result
+        except Exception as exc:
+            if attempt == retries - 1:
+                logger.error("Failed to process webhook after %d attempts: %s", retries, exc)
+                raise HTTPException(status_code=500, detail="Internal server error during webhook processing")
+            logger.warning("Webhook processing failed, retrying (%d/%d): %s", attempt + 1, retries, exc)
+            await asyncio.sleep(1)
+
+
+@app.post("/api/webhooks/payoneer/manual", dependencies=[Depends(require_api_token)])
+async def manual_payoneer_confirmation(request: Request):
+    """Fallback manual confirmation API path for when the Payoneer webhook fails.
+
+    Bypasses signature verification but requires the API auth token instead.
+    """
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Malformed JSON body") from exc
+
+    try:
+        event = parse_webhook_payload(payload)
+    except PayoneerWebhookError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        result = loop.record_payment(event)
+        return result
+    except Exception as exc:
+        logger.error("Manual payment confirmation failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/email/status")

@@ -278,3 +278,44 @@ class TestPayoneerWebhookEndpoint:
         )
 
         assert resp.status_code == 503
+
+    def test_manual_confirmation_bypasses_signature_but_requires_token(self):
+        client, loop, store = _client_with_loop()
+        body = {"payment_id": "manual_1", "amount": "5.00", "status": "completed"}
+
+        import os
+        os.environ["API_AUTH_TOKEN"] = "test-token"
+
+        # Without token in header -> 401
+        resp = client.post("/api/webhooks/payoneer/manual", json=body)
+        assert resp.status_code == 401
+        os.environ["API_AUTH_TOKEN"] = "test-token"
+        resp = client.post(
+            "/api/webhooks/payoneer/manual",
+            json=body,
+            headers={"Authorization": "Bearer test-token"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["processed"] is True
+        assert loop.wallet.total_balance == Decimal("5.00")
+        os.environ.pop("API_AUTH_TOKEN", None)
+
+    def test_webhook_retries_on_transient_failure(self):
+        from unittest.mock import MagicMock
+        client, loop, store = _client_with_loop()
+        
+        # Make it fail twice, succeed on third
+        mock_record = MagicMock(side_effect=[Exception("DB error"), Exception("DB error"), {"processed": True}])
+        loop.record_payment = mock_record
+
+        body = json.dumps({"payment_id": "retry_1", "amount": "2.00", "status": "completed"}).encode()
+        sig = _sign(body)
+
+        resp = client.post(
+            "/api/webhooks/payoneer",
+            content=body,
+            headers={"X-Payoneer-Signature": sig, "Content-Type": "application/json"},
+        )
+
+        assert resp.status_code == 200
+        assert mock_record.call_count == 3
