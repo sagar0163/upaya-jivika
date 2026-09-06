@@ -13,7 +13,9 @@ from src.captcha_handler import (
     CaptchaSolveError,
     PlatformBlockError,
     StealthTool,
+    _anticaptcha_solver,
     _nodriver_cookies_to_playwright,
+    anticaptcha_api_key,
     detect_bot_vendor,
     human_delay,
     human_type,
@@ -21,6 +23,7 @@ from src.captcha_handler import (
     recommend_tool,
     solve_hcaptcha,
     solve_recaptcha_v2,
+    solve_turnstile,
     twocaptcha_api_key,
     warm_cookies,
 )
@@ -208,6 +211,20 @@ class TestTwocaptchaApiKey:
         assert twocaptcha_api_key() is None
 
 
+class TestAnticaptchaApiKey:
+    def test_returns_none_when_unset(self, monkeypatch):
+        monkeypatch.delenv("ANTICAPTCHA_API_KEY", raising=False)
+        assert anticaptcha_api_key() is None
+
+    def test_returns_value_when_set(self, monkeypatch):
+        monkeypatch.setenv("ANTICAPTCHA_API_KEY", "anti123")
+        assert anticaptcha_api_key() == "anti123"
+
+    def test_empty_string_treated_as_unset(self, monkeypatch):
+        monkeypatch.setenv("ANTICAPTCHA_API_KEY", "")
+        assert anticaptcha_api_key() is None
+
+
 class TestProbeBotVendor:
     @pytest.mark.asyncio
     async def test_classifies_cloudflare_response(self):
@@ -306,6 +323,7 @@ class TestSolveRecaptchaV2:
     @pytest.mark.asyncio
     async def test_raises_when_no_api_key(self, monkeypatch):
         monkeypatch.delenv("TWOCAPTCHA_API_KEY", raising=False)
+        monkeypatch.delenv("ANTICAPTCHA_API_KEY", raising=False)
         with pytest.raises(CaptchaSolveError, match="not configured"):
             await solve_recaptcha_v2("sitekey", "https://x.example")
 
@@ -324,17 +342,84 @@ class TestSolveRecaptchaV2:
         from twocaptcha import ApiException
 
         monkeypatch.setenv("TWOCAPTCHA_API_KEY", "key123")
+        monkeypatch.delenv("ANTICAPTCHA_API_KEY", raising=False)
         mock_solver = MagicMock()
         mock_solver.recaptcha.side_effect = ApiException("ERROR_ZERO_BALANCE")
         with patch("twocaptcha.TwoCaptcha", return_value=mock_solver):
             with pytest.raises(CaptchaSolveError):
                 await solve_recaptcha_v2("sitekey", "https://x.example")
 
+    @pytest.mark.asyncio
+    async def test_falls_back_to_anticaptcha_when_2captcha_unconfigured(self, monkeypatch):
+        monkeypatch.delenv("TWOCAPTCHA_API_KEY", raising=False)
+        monkeypatch.setenv("ANTICAPTCHA_API_KEY", "anti-key")
+        mock_solver = MagicMock()
+        mock_solver.solve_and_return_solution.return_value = "ac-token"
+        with patch("anticaptchaofficial.recaptchav2proxyless.recaptchaV2Proxyless", return_value=mock_solver):
+            token = await solve_recaptcha_v2("sitekey", "https://x.example")
+        assert token == "ac-token"
+        mock_solver.set_key.assert_called_once_with("anti-key")
+        mock_solver.set_website_url.assert_called_once_with("https://x.example")
+        mock_solver.set_website_key.assert_called_once_with("sitekey")
+        mock_solver.solve_and_return_solution.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_anticaptcha_when_2captcha_fails(self, monkeypatch):
+        from twocaptcha import ApiException
+
+        monkeypatch.setenv("TWOCAPTCHA_API_KEY", "key123")
+        monkeypatch.setenv("ANTICAPTCHA_API_KEY", "anti-key")
+        mock_2c = MagicMock()
+        mock_2c.recaptcha.side_effect = ApiException("ERROR_CAPTCHA_UNSOLVABLE")
+        mock_ac = MagicMock()
+        mock_ac.solve_and_return_solution.return_value = "ac-token"
+        with (
+            patch("twocaptcha.TwoCaptcha", return_value=mock_2c),
+            patch("anticaptchaofficial.recaptchav2proxyless.recaptchaV2Proxyless", return_value=mock_ac),
+        ):
+            token = await solve_recaptcha_v2("sitekey", "https://x.example")
+        assert token == "ac-token"
+        mock_ac.solve_and_return_solution.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_anticaptcha_failure_raises_with_error_code(self, monkeypatch):
+        monkeypatch.delenv("TWOCAPTCHA_API_KEY", raising=False)
+        monkeypatch.setenv("ANTICAPTCHA_API_KEY", "anti-key")
+        mock_ac = MagicMock()
+        mock_ac.solve_and_return_solution.return_value = 0
+        mock_ac.error_code = "ERROR_EMPTY_ACTION"
+        with patch("anticaptchaofficial.recaptchav2proxyless.recaptchaV2Proxyless", return_value=mock_ac):
+            with pytest.raises(CaptchaSolveError, match="ERROR_EMPTY_ACTION"):
+                await solve_recaptcha_v2("sitekey", "https://x.example")
+
+    @pytest.mark.asyncio
+    async def test_raises_with_aggregate_errors_when_all_solvers_fail(self, monkeypatch):
+        from twocaptcha import ApiException
+
+        monkeypatch.setenv("TWOCAPTCHA_API_KEY", "key123")
+        monkeypatch.setenv("ANTICAPTCHA_API_KEY", "anti-key")
+        mock_2c = MagicMock()
+        mock_2c.recaptcha.side_effect = ApiException("ERROR_ZERO_BALANCE")
+        mock_ac = MagicMock()
+        mock_ac.solve_and_return_solution.return_value = 0
+        mock_ac.error_code = "ERROR_ZERO_BALANCE"
+        with (
+            patch("twocaptcha.TwoCaptcha", return_value=mock_2c),
+            patch("anticaptchaofficial.recaptchav2proxyless.recaptchaV2Proxyless", return_value=mock_ac),
+        ):
+            with pytest.raises(CaptchaSolveError, match="All solvers failed"):
+                await solve_recaptcha_v2("sitekey", "https://x.example")
+
+    def test_unknown_anticaptcha_method_raises(self):
+        with pytest.raises(ValueError, match="Unknown anticaptcha method"):
+            _anticaptcha_solver("geetest")
+
 
 class TestSolveHcaptcha:
     @pytest.mark.asyncio
     async def test_raises_when_no_api_key(self, monkeypatch):
         monkeypatch.delenv("TWOCAPTCHA_API_KEY", raising=False)
+        monkeypatch.delenv("ANTICAPTCHA_API_KEY", raising=False)
         with pytest.raises(CaptchaSolveError, match="not configured"):
             await solve_hcaptcha("sitekey", "https://x.example")
 
@@ -346,3 +431,47 @@ class TestSolveHcaptcha:
         with patch("twocaptcha.TwoCaptcha", return_value=mock_solver):
             token = await solve_hcaptcha("sitekey", "https://x.example")
         assert token == "hc-token"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_anticaptcha_via_hcaptcha_solver(self, monkeypatch):
+        monkeypatch.delenv("TWOCAPTCHA_API_KEY", raising=False)
+        monkeypatch.setenv("ANTICAPTCHA_API_KEY", "anti-key")
+        mock_ac = MagicMock()
+        mock_ac.solve_and_return_solution.return_value = "hc-ac-token"
+        with patch("anticaptchaofficial.hcaptchaproxyless.hCaptchaProxyless", return_value=mock_ac):
+            token = await solve_hcaptcha("sitekey", "https://x.example")
+        assert token == "hc-ac-token"
+
+
+class TestSolveTurnstile:
+    @pytest.mark.asyncio
+    async def test_raises_when_no_api_key(self, monkeypatch):
+        monkeypatch.delenv("TWOCAPTCHA_API_KEY", raising=False)
+        monkeypatch.delenv("ANTICAPTCHA_API_KEY", raising=False)
+        with pytest.raises(CaptchaSolveError, match="not configured"):
+            await solve_turnstile("sitekey", "https://x.example")
+
+    @pytest.mark.asyncio
+    async def test_returns_token_on_success_twocaptcha(self, monkeypatch):
+        monkeypatch.setenv("TWOCAPTCHA_API_KEY", "key123")
+        monkeypatch.delenv("ANTICAPTCHA_API_KEY", raising=False)
+        mock_solver = MagicMock()
+        mock_solver.turnstile.return_value = {"code": "ts-token"}
+        with patch("twocaptcha.TwoCaptcha", return_value=mock_solver):
+            token = await solve_turnstile("sitekey", "https://x.example")
+        assert token == "ts-token"
+        mock_solver.turnstile.assert_called_once_with(sitekey="sitekey", url="https://x.example")
+
+    @pytest.mark.asyncio
+    async def test_returns_token_on_success_anticaptcha(self, monkeypatch):
+        monkeypatch.delenv("TWOCAPTCHA_API_KEY", raising=False)
+        monkeypatch.setenv("ANTICAPTCHA_API_KEY", "key123")
+        mock_solver = MagicMock()
+        mock_solver.solve_and_return_solution.return_value = "ts-token"
+        with patch("anticaptchaofficial.turnstileproxyless.turnstileProxyless", return_value=mock_solver):
+            token = await solve_turnstile("sitekey", "https://x.example")
+        assert token == "ts-token"
+        mock_solver.set_key.assert_called_once_with("key123")
+        mock_solver.set_website_url.assert_called_once_with("https://x.example")
+        mock_solver.set_website_key.assert_called_once_with("sitekey")
+        mock_solver.solve_and_return_solution.assert_called_once()

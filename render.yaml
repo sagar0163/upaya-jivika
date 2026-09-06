@@ -62,10 +62,14 @@ services:
       # in Supabase app_settings and wins over this env var on startup.
       - key: SURVIVAL_MODE
         value: "1"
-      # §19 paid CAPTCHA-solving fallback (2captcha.com) — soft-configured,
-      # same pattern as the other optional secrets: the ladder just stops one
-      # rung earlier (GIVE_UP) when this isn't set.
+      # §19/issue #59 paid CAPTCHA-solving — 2Captcha primary, Anti-Captcha
+      # fallback (same as the other optional secrets: the ladder just stops
+      # one rung earlier/GIVE_UP when neither is set). Anti-Captcha accepts
+      # crypto top-ups, the practical card alternative in an India/Payoneer
+      # setup.
       - key: TWOCAPTCHA_API_KEY
+        sync: false
+      - key: ANTICAPTCHA_API_KEY
         sync: false
       # Encrypts platform passwords at rest in the Supabase `credentials`
       # table (src/vault.py). Soft-configured: unset means passwords are

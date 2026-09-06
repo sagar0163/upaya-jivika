@@ -272,9 +272,9 @@ Platform earns
 | Deep crawler | ✅ Defined | Firecrawl · 1,000 credits/month |
 | Writing engine | ✅ Defined | NVIDIA NIM · articles, prompts, task output |
 | Database | ✅ Defined | Supabase · all state |
-| Browser automation | ⚠️ Partial | Playwright · real connectors exist for Clickworker/Toloka/Prolific · CAPTCHA/bot-detection escalation (§19) now wired end-to-end (nodriver/Camoufox cookie-warming + 2Captcha solving) — Kasada and playwright-captcha still gaps, effectiveness untested against live protected targets |
+| Browser automation | ⚠️ Partial | Playwright · real connectors exist for Clickworker/Toloka/Prolific · CAPTCHA/bot-detection escalation (§19) now wired end-to-end (nodriver/Camoufox cookie-warming + 2Captcha/Anti-Captcha solving incl. Turnstile) — Kasada still a gap, effectiveness untested against live protected targets |
 | Email inbox | ⚠️ Partial | IMAP client + payment-alert scanning live (every 15 min) — verification-link flow not yet called during signup |
-| CAPTCHA handler | ⚠️ Partial | Detection + escalation ladder + playwright-stealth + nodriver + Camoufox + 2Captcha all wired and unit-tested · playwright-captcha (free Turnstile solver) and Kasada still gaps · unverified against live Cloudflare/DataDome |
+| CAPTCHA handler | ⚠️ Partial | Detection + escalation ladder + playwright-stealth + nodriver + Camoufox + 2Captcha and Anti-Captcha all wired and unit-tested (reCAPTCHA/hCaptcha/Cloudflare Turnstile) · Kasada still a gap · unverified against live Cloudflare/DataDome |
 | Code sandbox | ❌ Gap | For testing micro-tools before selling |
 | Task memory | ✅ SOLVED | `src/respawn_policy.py` — `record_outcome` scores every task attempt by platform + task type; `FRESH_SLATE`/`CARRY_FORWARD` decides whether a new life inherits it |
 | Alert system | ✅ SOLVED | Pluggable notifiers fire once on entering Critical/Terminal & on death (`src/alert_system.py`) |
@@ -464,7 +464,7 @@ dashboard.py         — Rich terminal UI, live status
 | ✅ | Payment confirmation | **SOLVED** — `POST /api/webhooks/payoneer` in `main.py` (`src/payoneer_webhook.py`) verifies an HMAC-SHA256 signature, credits the wallet idempotently by `payment_id`, repays debt first. Payload field names are defensive/best-effort since Payoneer's exact webhook schema isn't public — narrow once real payloads are observed. |
 | ✅ | CI pipeline | **SOLVED** — `ci.yml` now runs `ruff` + `pytest` (was a Node no-op); flaky WS test fixed |
 | 🟡 | Email inbox | `src/email_inbox.py` built — IMAP client (soft-configured via `EMAIL_IMAP_*` env vars), verification link/code extraction, payment-alert detection; payment-alert scanning is live (runs every 15 min, wired into the event feed/cold archive). **Not wired**: no connector calls `wait_for_verification_email` during signup — most real platforms require email verification to create an account at all, so this blocks autonomous onboarding to new platforms until closed |
-| 🟡 | CAPTCHA handling | §19 detection/escalation/blocklist + playwright-stealth + `nodriver`/`Camoufox` cookie-warming + 2Captcha paid solving are all built and wired into `TaskExecutor`/`BrowserSessionManager`/`PlatformConnector`. Deliberate scope choice per explicit user decision (2026-09-04): implements full bypass/evasion, accepting the ToS-violation risk on platforms with bot protection. Remaining gaps: `playwright-captcha` (free Turnstile solving) not integrated, Kasada has no ladder entry at all (still blocklist-and-abandon), and real-world bypass effectiveness against live Cloudflare/DataDome/Akamai is unverified — this environment has no live protected target to test against |
+| 🟡 | CAPTCHA handling | §19 detection/escalation/blocklist + playwright-stealth + `nodriver`/`Camoufox` cookie-warming + 2Captcha paid solving with Anti-Captcha fallback (reCAPTCHA/hCaptcha/Cloudflare Turnstile) are all built and wired into `TaskExecutor`/`BrowserSessionManager`/`PlatformConnector`. Deliberate scope choice per explicit user decision (2026-09-04): implements full bypass/evasion, accepting the ToS-violation risk on platforms with bot protection. Remaining gaps: Kasada has no ladder entry at all (still blocklist-and-abandon), and real-world bypass effectiveness against live Cloudflare/DataDome/Akamai is unverified — this environment has no live protected target to test against |
 | ✅ | Withdrawal mechanism | **SOLVED** — Dashboard UI + `POST /api/withdraw` (`src/withdrawal.py`) debits the chosen pool and requests a Payoneer payout, queuing for manual processing until `PAYONEER_API_KEY`/`PAYONEER_PROGRAM_ID` are configured (same soft-dependency pattern as the Payoneer webhook) |
 | 🟡 | Ethical guardrail | **SOLVED** — `src/guardrails.py` hard blacklist (spam/fake review/plagiarism/ToS violation/illegal) enforced in `task_scorer` + `task_executor` even in Terminal state |
 | 🟡 | Respawn policy | **SOLVED** (`src/respawn_policy.py`) — `FRESH_SLATE` vs `CARRY_FORWARD` of empirical task scores on rebirth |
@@ -483,7 +483,7 @@ dashboard.py         — Rich terminal UI, live status
 | Risk | Level | Mitigation |
 |---|---|---|
 | Platform ToS violation | 🔴 HIGH | Human-paced Playwright · research ToS before joining any platform |
-| CAPTCHA blocking earning | 🟡 MEDIUM | §19 full ladder wired: detection/escalation/blocklist + playwright-stealth + nodriver/Camoufox cookie-warming + 2Captcha paid solving · Kasada and playwright-captcha still gaps · unverified against live protected targets |
+| CAPTCHA blocking earning | 🟡 MEDIUM | §19 full ladder wired: detection/escalation/blocklist + playwright-stealth + nodriver/Camoufox cookie-warming + 2Captcha/Anti-Captcha paid solving (reCAPTCHA/hCaptcha/Turnstile) · Kasada still a gap · unverified against live protected targets |
 | Payment not confirming | ✅ SOLVED | `/api/webhooks/payoneer` credits the wallet automatically on a signed `completed` event, idempotent by `payment_id` |
 | Render sleep kills debt clock | 🟡 MEDIUM | Debt state persisted in Supabase — survives sleep |
 | NVIDIA rate limit changes | 🟡 MEDIUM | Full fallback chain: Groq → Gemini → Mistral → OpenRouter |
@@ -587,6 +587,7 @@ services:
 | `API_AUTH_TOKEN` | ✓ | — | Gates every mutating endpoint (`src/api_auth.py`) — withdraw, spend veto, manual debt/research triggers |
 | `GITHUB_TOKEN` | — | ✓ built-in | diary_writer |
 | `HF_TOKEN` | ✓ | ✓ | hf_sync + cold_archive (Layer 3) |
+| `TWOCAPTCHA_API_KEY` + `ANTICAPTCHA_API_KEY` | ✓ | — | §19 paid CAPTCHA solving (2Captcha primary, Anti-Captcha fallback) — soft-configured, never committed |
 | Platform credentials | ✓ via vault | — | `credentials` table in Supabase via `src/vault.py` (auto-created, keyed by provider + key) |
 
 ### Branching strategy
@@ -673,7 +674,7 @@ Each phase after ships into this live system:
 
 ## 19. CAPTCHA & Bot Detection Strategy
 
-**Status: Implemented (`src/captcha_handler.py`, `src/task_executor.py`).** Vendor probing (`detect_bot_vendor`/`probe_bot_vendor`), the per-platform escalation ladder (`recommend_tool`/`BotDetectionTracker`), permanent block tracking (persisted via `is_platform_blocked`/`mark_platform_blocked`, survives `clear()`), and behavioral simulation (`human_delay`/`human_type`) are built and unit-tested. `playwright-stealth` is wired into `BrowserSessionManager.create_context()` (soft dependency — no-ops if not installed). **`nodriver` and `Camoufox` are now real, wired cookie-warmers**: `TaskExecutor._warm_context_for_vendor()` probes the target before every login attempt, and when the ladder's next tool is `NODRIVER`/`CAMOUFOX` it launches that engine against the login URL, lets any challenge clear, and hands the resulting cookies to the existing Playwright context via `add_cookies()` — no second connector implementation needed, since login/task-navigation logic stays on Playwright. **2Captcha (`solve_recaptcha_v2`/`solve_hcaptcha`) is wired as a real paid solver**, invoked by `PlatformConnector._attempt_captcha_solve()` when an inline reCAPTCHA/hCaptcha widget is detected mid-login; it injects the solved token into the page's response field and lets the site's own submit-time validation check it. `TWOCAPTCHA_API_KEY` is a soft dependency (unset → that rung raises `CaptchaSolveError`, caught and treated as escalate-or-give-up, not a crash). Login failures/successes are reported back to `BotDetectionTracker` so the ladder actually advances/resets across attempts. `playwright-captcha` (Turnstile/free click-solving) is **not** integrated, and **Kasada has no ladder entry at all** — a Kasada-fronted platform still just gets blocklisted. Real-world effectiveness against live Cloudflare/DataDome-class protection is **untested** — there is no protected site in this environment to verify against; this is production-only-verifiable code path.
+**Status: Implemented (`src/captcha_handler.py`, `src/task_executor.py`).** Vendor probing (`detect_bot_vendor`/`probe_bot_vendor`), the per-platform escalation ladder (`recommend_tool`/`BotDetectionTracker`), permanent block tracking (persisted via `is_platform_blocked`/`mark_platform_blocked`, survives `clear()`), and behavioral simulation (`human_delay`/`human_type`) are built and unit-tested. `playwright-stealth` is wired into `BrowserSessionManager.create_context()` (soft dependency — no-ops if not installed). **`nodriver` and `Camoufox` are now real, wired cookie-warmers**: `TaskExecutor._warm_context_for_vendor()` probes the target before every login attempt, and when the ladder's next tool is `NODRIVER`/`CAMOUFOX` it launches that engine against the login URL, lets any challenge clear, and hands the resulting cookies to the existing Playwright context via `add_cookies()` — no second connector implementation needed, since login/task-navigation logic stays on Playwright. **2Captcha with an Anti-Captcha fallback (`solve_recaptcha_v2`/`solve_hcaptcha`/`solve_turnstile`) is wired as a real paid solver**, invoked by `PlatformConnector._attempt_captcha_solve()` when an inline reCAPTCHA/hCaptcha/Cloudflare-Turnstile widget is detected mid-login; it injects the solved token into the page's response field and lets the site's own submit-time validation check it. `TWOCAPTCHA_API_KEY` (primary) and `ANTICAPTCHA_API_KEY` (fallback) are soft dependencies — an unset provider is skipped, the other is tried instead, and neither set means the rung raises `CaptchaSolveError`, caught and treated as escalate-or-give-up, not a crash. Login failures/successes are reported back to `BotDetectionTracker` so the ladder actually advances/resets across attempts. `playwright-captcha` (free click-solving) is **not** integrated, and **Kasada has no ladder entry at all** — a Kasada-fronted platform still just gets blocklisted. Real-world effectiveness against live Cloudflare/DataDome-class protection is **untested** — there is no protected site in this environment to verify against; this is production-only-verifiable code path.
 
 ### Detection layers (must beat all 5 simultaneously)
 
@@ -683,7 +684,7 @@ Each phase after ships into this live system:
 | Browser fingerprint | Canvas, WebGL, audio APIs, fonts | nodriver / Camoufox patches at C++ level |
 | Behavioral analysis | Mouse curves, scroll entropy, timing | 300–2,500ms jitter · realistic interaction simulation |
 | TLS fingerprinting | JA3 hash, cipher order, HTTP/2 SETTINGS | nodriver (Chrome CDP) + Camoufox (Firefox NSS) |
-| Active challenges | Turnstile, reCAPTCHA, hCaptcha | playwright-captcha click-based solver (free) |
+| Active challenges | Turnstile, reCAPTCHA, hCaptcha | 2Captcha/Anti-Captcha API solvers (paid) · inject response token into widget |
 
 ### Tool stack (all free)
 
@@ -692,9 +693,9 @@ Each phase after ships into this live system:
 | **nodriver** | Primary browser engine | 0 blocked in Aug 2026 benchmark across 31 targets | CDP-direct, no WebDriver, async Python, drop-in |
 | **Camoufox** | Secondary / Firefox fingerprint | 0% headless detection on hard targets | C++ level patches, Firefox NSS = different TLS from Chrome |
 | **playwright-stealth v2.0.3** | Lightweight patch layer | Good for basic targets | April 2026 release, actively maintained |
-| **playwright-captcha** | Turnstile/reCAPTCHA solver | Free click-based solving | Handles Cloudflare Turnstile + interstitial automatically |
+| **2Captcha + Anti-Captcha** | reCAPTCHA/hCaptcha/Turnstile API solving | Near-100% for standard widgets | Paid per-solve · 2Captcha $3/1K, Anti-Captcha $2/1K · soft-configured |
 
-> **Do NOT use:** playwright-extra stealth (Node.js, unmaintained since 2023). **Do NOT use:** rebrowser-patches (same fail rate as vanilla Playwright in benchmarks).
+> **Do NOT use:** playwright-extra stealth (Node.js, unmaintained since 2023). **Do NOT use:** rebrowser-patches (same fail rate as vanilla Playwright in benchmarks). `playwright-captcha` (free click-based solving) is **not integrated** — paid API solving via 2Captcha/Anti-Captcha covers Turnstile/reCAPTCHA/hCaptcha instead.
 
 ### No hardcoded targets — fully dynamic
 
@@ -724,8 +725,8 @@ Agent decides to try a new platform (from research)
 | `playwright-stealth` | No vendor signature detected · basic protection | ✅ |
 | `nodriver` | Cloudflare standard · any JS-fingerprint challenge | ✅ |
 | `Camoufox` | Cloudflare Enterprise · DataDome · hard fingerprinting | ✅ |
-| `playwright-captcha` | Turnstile / reCAPTCHA challenge appears | ✅ |
-| `2captcha` | All free solvers fail · platform high-value | 💰 $3/1K |
+| `2Captcha` | Inline reCAPTCHA / hCaptcha / Cloudflare Turnstile widget survives stealth | 💰 $3/1K |
+| `Anti-Captcha` | 2Captcha unconfigured or fails (fallback) | 💰 $2/1K |
 
 #### Agent decision rule
 
@@ -763,12 +764,15 @@ async def human_type(page, selector, text):
 nodriver>=0.36          # primary engine (replaces plain playwright for most tasks)
 camoufox[geoip]>=0.4   # secondary Firefox fingerprint engine
 playwright-stealth>=2.0.3  # lightweight patch layer for remaining playwright paths
-playwright-captcha>=0.3    # free Turnstile + reCAPTCHA click solver
+2captcha-python>=1.2.5     # paid reCAPTCHA/hCaptcha/Turnstile API solving (import: twocaptcha)
+anticaptchaofficial>=1.0.51  # paid fallback solver (Anti-Captcha)
 ```
 
 ### Paid fallback (only if free tools fail on a specific platform)
 
-2captcha — $3 per 1,000 solves. Only use if Fiverr/Upwork become critical earning platforms and free click-solving fails consistently. Agent can spend from free pool for this if ROI certainty >95%.
+2Captcha ($3 per 1,000 solves) or, as fallback, Anti-Captcha ($2 per 1,000 solves). Only use if Fiverr/Upwork become critical earning platforms and free click-solving fails consistently. Agent can spend from free pool for this if ROI certainty >95%.
+
+**API keys (India/Payoneer context):** both are opt-in env vars — `TWOCAPTCHA_API_KEY` and `ANTICAPTCHA_API_KEY` — set one, the other, or neither; unset providers are skipped, and the connector gives up (never crashes) when both are unset. Cross-border card payments to these services commonly get rejected on Indian cards, so **Anti-Captcha is the practical fallback: it accepts crypto (USDT etc.) top-ups**, which are far easier to fund from a Payoneer/India setup than a working international card. Keys live in the Render dashboard env vars (declared in `render.yaml`) — never committed to the repo, never hardcoded. Keep balances funded ahead of earning hours; a zero balance just makes that rung fail-soft to the other provider or to manual solving.
 
 
 ---

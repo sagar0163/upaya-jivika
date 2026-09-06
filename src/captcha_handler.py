@@ -29,12 +29,19 @@ live browser:
   Playwright-compatible API (``AsyncCamoufox`` yields a real
   ``playwright.async_api.Browser``), used the same cookie-warming way as
   nodriver for vendors nodriver alone doesn't clear.
-- **2Captcha paid solving** — for an inline reCAPTCHA/hCaptcha widget that
-  survives stealth, ``solve_recaptcha_v2``/``solve_hcaptcha`` submit the
-  sitekey to the 2Captcha API and return the response token to inject into
-  the page. Soft-configured via ``TWOCAPTCHA_API_KEY`` — absent means this
-  rung is skipped, same fail-soft pattern as the rest of the codebase's
-  optional secrets.
+- **2Captcha paid solving** — for an inline reCAPTCHA/hCaptcha/Turnstile
+  widget that survives stealth, ``solve_recaptcha_v2``/``solve_hcaptcha``/
+  ``solve_turnstile`` submit the sitekey to the 2Captcha API and return the
+  response token to inject into the page. Soft-configured via
+  ``TWOCAPTCHA_API_KEY`` — absent means this rung is skipped, same fail-soft
+  pattern as the rest of the codebase's optional secrets.
+- **Anti-Captcha fallback** — every solver function tries 2Captcha first,
+  then Anti-Captcha when 2Captcha is unconfigured or fails. Soft-configured
+  via ``ANTICAPTCHA_API_KEY``. The two providers are interchangeable from
+  the connector's point of view: both pay per solve and return the same
+  response-token to inject. Anti-Captcha additionally accepts crypto
+  top-ups, which is the practical payment path in an India/Payoneer setup
+  where international card top-ups are often declined.
 
 Kasada has no ladder entry (artifact.md §19: "hardest — research
 alternative") — none of the above reliably clears it, so a Kasada-fronted
@@ -127,8 +134,8 @@ class StealthTool(str, Enum):
 #: Which tools are actually wired into task_executor.py today. ``True`` means
 #: the code path exists and will be attempted; it does not guarantee success
 #: against a given vendor, and PAID_CAPTCHA_SOLVER additionally soft-degrades
-#: to a no-op if ``TWOCAPTCHA_API_KEY`` isn't configured (see
-#: :func:`twocaptcha_api_key`).
+#: to a no-op if neither ``TWOCAPTCHA_API_KEY`` nor ``ANTICAPTCHA_API_KEY``
+#: is configured (see :func:`twocaptcha_api_key` / :func:`anticaptcha_api_key`).
 TOOL_IMPLEMENTED: dict[StealthTool, bool] = {
     StealthTool.PLAYWRIGHT_STEALTH: True,
     StealthTool.NODRIVER: True,
@@ -141,6 +148,12 @@ TOOL_IMPLEMENTED: dict[StealthTool, bool] = {
 def twocaptcha_api_key() -> str | None:
     """Return the configured 2Captcha API key, or ``None`` if unset."""
     return os.environ.get("TWOCAPTCHA_API_KEY") or None
+
+
+def anticaptcha_api_key() -> str | None:
+    """Return the configured Anti-Captcha API key, or ``None`` if unset."""
+    return os.environ.get("ANTICAPTCHA_API_KEY") or None
+
 
 #: Escalation ladder per vendor, most-likely-to-work first, as designed in
 #: artifact.md §19's "stealth toolkit". ``NONE`` (no detected vendor) starts
@@ -294,58 +307,113 @@ async def warm_cookies(tool: StealthTool, url: str) -> list[CookieDict]:
 
 
 # ---------------------------------------------------------------------------
-# 2Captcha paid solving (final rung before GIVE_UP)
+# Paid solving (2Captcha with Anti-Captcha fallback, final rung before GIVE_UP)
 # ---------------------------------------------------------------------------
 
 class CaptchaSolveError(Exception):
-    """Raised when a 2Captcha solve request fails or times out."""
+    """Raised when a solve request fails or times out."""
+
+
+async def _solve_with_2captcha(method_name: str, sitekey: str, url: str, **kwargs) -> str:
+    key = twocaptcha_api_key()
+    if not key:
+        raise CaptchaSolveError("TWOCAPTCHA_API_KEY not configured")
+
+    from twocaptcha import ApiException, NetworkException, TimeoutException, TwoCaptcha  # type: ignore[import-untyped]
+
+    solver = TwoCaptcha(key)
+    try:
+        method = getattr(solver, method_name)
+        result = await asyncio.to_thread(method, sitekey=sitekey, url=url, **kwargs)
+        return result["code"]
+    except (ApiException, NetworkException, TimeoutException) as e:
+        raise CaptchaSolveError(f"2Captcha {method_name} failed: {e}") from e
+
+
+def _anticaptcha_solver(method_name: str):
+    """Instantiate the Anti-Captcha proxyless solver class for ``method_name``."""
+    if method_name == "recaptcha":
+        from anticaptchaofficial.recaptchav2proxyless import recaptchaV2Proxyless
+
+        return recaptchaV2Proxyless()
+    if method_name == "hcaptcha":
+        from anticaptchaofficial.hcaptchaproxyless import hCaptchaProxyless
+
+        return hCaptchaProxyless()
+    if method_name == "turnstile":
+        from anticaptchaofficial.turnstileproxyless import turnstileProxyless
+
+        return turnstileProxyless()
+    raise ValueError(f"Unknown anticaptcha method: {method_name}")
+
+
+async def _solve_with_anticaptcha(method_name: str, sitekey: str, url: str) -> str:
+    key = anticaptcha_api_key()
+    if not key:
+        raise CaptchaSolveError("ANTICAPTCHA_API_KEY not configured")
+
+    solver = _anticaptcha_solver(method_name)
+    solver.set_verbose(1)
+    solver.set_key(key)
+    solver.set_website_url(url)
+    solver.set_website_key(sitekey)
+
+    def solve() -> str:
+        token = solver.solve_and_return_solution()
+        if token == 0:
+            raise CaptchaSolveError(f"Anti-Captcha failed: {solver.error_code}")
+        return token
+
+    return await asyncio.to_thread(solve)
+
+
+async def _solve_with_fallback(method_name: str, sitekey: str, url: str, **kwargs) -> str:
+    """Try 2Captcha first, then Anti-Captcha, then fail.
+
+    Each provider is opt-in via its own env var, so the fallback only
+    engages providers that are actually configured. If every configured
+    provider fails, the collected errors are surfaced in one message so the
+    connector can log exactly why the paid solver rung gave up.
+    """
+    errors: list[str] = []
+
+    if twocaptcha_api_key():
+        try:
+            return await _solve_with_2captcha(method_name, sitekey, url, **kwargs)
+        except CaptchaSolveError as e:
+            errors.append(str(e))
+    else:
+        errors.append("TWOCAPTCHA_API_KEY not configured")
+
+    if anticaptcha_api_key():
+        try:
+            return await _solve_with_anticaptcha(method_name, sitekey, url)
+        except CaptchaSolveError as e:
+            errors.append(str(e))
+    else:
+        errors.append("ANTICAPTCHA_API_KEY not configured")
+
+    raise CaptchaSolveError(f"All solvers failed: {'; '.join(errors)}")
 
 
 async def solve_recaptcha_v2(sitekey: str, url: str, *, api_key: str | None = None) -> str:
-    """Solve an inline reCAPTCHA v2 challenge via 2Captcha; return the token.
+    """Solve an inline reCAPTCHA v2 challenge; return the token.
 
-    The 2captcha-python client is synchronous (it polls over HTTP), so it
-    runs in a worker thread rather than blocking the event loop.
+    Tries the 2Captcha API first, falling back to Anti-Captcha when 2Captcha
+    is unconfigured or fails. ``api_key`` is accepted for backward
+    compatibility but ignored — keys are read from the environment.
     """
-    key = api_key or twocaptcha_api_key()
-    if not key:
-        raise CaptchaSolveError("TWOCAPTCHA_API_KEY not configured")
-
-    from twocaptcha import (  # type: ignore[import-untyped]
-        ApiException,
-        NetworkException,
-        TimeoutException,
-        TwoCaptcha,
-    )
-
-    solver = TwoCaptcha(key)
-    try:
-        result = await asyncio.to_thread(solver.recaptcha, sitekey=sitekey, url=url)
-        return result["code"]
-    except (ApiException, NetworkException, TimeoutException) as e:
-        raise CaptchaSolveError(f"2Captcha reCAPTCHA solve failed: {e}") from e
+    return await _solve_with_fallback("recaptcha", sitekey, url)
 
 
 async def solve_hcaptcha(sitekey: str, url: str, *, api_key: str | None = None) -> str:
-    """Solve an inline hCaptcha challenge via 2Captcha; return the token."""
-    key = api_key or twocaptcha_api_key()
-    if not key:
-        raise CaptchaSolveError("TWOCAPTCHA_API_KEY not configured")
+    """Solve an inline hCaptcha challenge; return the token (2Captcha → Anti-Captcha)."""
+    return await _solve_with_fallback("hcaptcha", sitekey, url)
 
-    from twocaptcha import (  # type: ignore[import-untyped]
-        ApiException,
-        NetworkException,
-        TimeoutException,
-        TwoCaptcha,
-    )
 
-    solver = TwoCaptcha(key)
-    try:
-        result = await asyncio.to_thread(solver.hcaptcha, sitekey=sitekey, url=url)
-        return result["code"]
-    except (ApiException, NetworkException, TimeoutException) as e:
-        raise CaptchaSolveError(f"2Captcha hCaptcha solve failed: {e}") from e
-
+async def solve_turnstile(sitekey: str, url: str, *, api_key: str | None = None) -> str:
+    """Solve a Cloudflare Turnstile challenge; return the token (2Captcha → Anti-Captcha)."""
+    return await _solve_with_fallback("turnstile", sitekey, url)
 
 # ---------------------------------------------------------------------------
 # Behavioral simulation

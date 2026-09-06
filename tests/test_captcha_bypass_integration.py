@@ -223,9 +223,10 @@ class _FakeLocator:
 
 
 class _FakePage:
-    def __init__(self, recaptcha_count=0, sitekey="site-key-123", evaluate_ok=True):
+    def __init__(self, recaptcha_count=0, sitekey="site-key-123", evaluate_ok=True, turnstile_count=0):
         self.url = "https://x.example/login"
         self._recaptcha_count = recaptcha_count
+        self._turnstile_count = turnstile_count
         self._sitekey = sitekey
         self._evaluate_ok = evaluate_ok
         self.evaluate_calls: list[tuple] = []
@@ -233,6 +234,8 @@ class _FakePage:
     def locator(self, selector):
         if "recaptcha" in selector:
             return _FakeLocator(self._recaptcha_count, self._sitekey)
+        if "cf-turnstile" in selector or "challenges.cloudflare.com" in selector:
+            return _FakeLocator(self._turnstile_count, self._sitekey)
         if "data-sitekey" in selector:
             return _FakeLocator(1, self._sitekey)
         return _FakeLocator(0)
@@ -241,6 +244,28 @@ class _FakePage:
         self.evaluate_calls.append(args)
         if not self._evaluate_ok:
             raise RuntimeError("evaluate failed")
+
+
+class TestDetectBotCheck:
+    @pytest.mark.asyncio
+    async def test_detects_cloudflare_turnstile_widget(self):
+        from src.task_executor import ClickworkerConnector
+
+        connector = ClickworkerConnector.__new__(ClickworkerConnector)
+        connector.platform = Platform.CLICKWORKER
+        connector.page = _FakePage(turnstile_count=1)
+
+        assert await connector._detect_bot_check() is True
+
+    @pytest.mark.asyncio
+    async def test_clean_page_not_detected(self):
+        from src.task_executor import ClickworkerConnector
+
+        connector = ClickworkerConnector.__new__(ClickworkerConnector)
+        connector.platform = Platform.CLICKWORKER
+        connector.page = _FakePage(recaptcha_count=0, turnstile_count=0)
+
+        assert await connector._detect_bot_check() is False
 
 
 class TestAttemptCaptchaSolve:
@@ -277,6 +302,20 @@ class TestAttemptCaptchaSolve:
         connector.page = _FakePage(recaptcha_count=1, sitekey=None)
 
         assert await connector._attempt_captcha_solve() is False
+
+    @pytest.mark.asyncio
+    async def test_solves_turnstile_and_injects_token(self):
+        from src.task_executor import ClickworkerConnector
+
+        connector = ClickworkerConnector.__new__(ClickworkerConnector)
+        connector.platform = Platform.CLICKWORKER
+        connector.page = _FakePage(turnstile_count=1, sitekey="ts-sitekey")
+
+        with patch("src.captcha_handler.solve_turnstile", AsyncMock(return_value="ts-token")):
+            solved = await connector._attempt_captcha_solve()
+
+        assert solved is True
+        assert connector.page.evaluate_calls  # token was injected
 
     @pytest.mark.asyncio
     async def test_solve_error_returns_false(self):

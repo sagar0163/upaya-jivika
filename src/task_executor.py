@@ -152,6 +152,8 @@ class PlatformConnector(ABC):
         markers = [
             "iframe[src*='recaptcha']",
             "iframe[src*='hcaptcha']",
+            ".cf-turnstile",
+            "iframe[src*='challenges.cloudflare.com']",
             "#captcha",
             ".g-recaptcha",
             "input[name='captcha']",
@@ -179,20 +181,26 @@ class PlatformConnector(ABC):
         return False
 
     async def _attempt_captcha_solve(self) -> bool:
-        """Solve an inline reCAPTCHA/hCaptcha widget on the current page via
-        2Captcha and inject the response token (§19 paid-solver rung).
+        """Solve an inline reCAPTCHA/hCaptcha/Turnstile widget on the current
+        page via 2Captcha (Anti-Captcha fallback) and inject the response
+        token (§19 paid-solver rung).
 
         Returns True if a token was found and injected — the caller should
         then retry its normal submit flow, since the token is validated
         server-side on submit, not merely by its presence in the DOM.
         Returns False for no widget found, no sitekey, solving failed, or
-        ``TWOCAPTCHA_API_KEY`` not configured — all of which mean "give up",
-        not "retry".
+        neither ``TWOCAPTCHA_API_KEY`` nor ``ANTICAPTCHA_API_KEY``
+        configured — all of which mean "give up", not "retry".
         """
         if not self.page:
             return False
 
-        from src.captcha_handler import CaptchaSolveError, solve_hcaptcha, solve_recaptcha_v2
+        from src.captcha_handler import (
+            CaptchaSolveError,
+            solve_hcaptcha,
+            solve_recaptcha_v2,
+            solve_turnstile,
+        )
 
         for marker, solve, response_selectors in (
             (
@@ -204,6 +212,11 @@ class PlatformConnector(ABC):
                 "iframe[src*='hcaptcha']",
                 solve_hcaptcha,
                 ("[name='h-captcha-response']", "[name='g-recaptcha-response']"),
+            ),
+            (
+                ".cf-turnstile, iframe[src*='challenges.cloudflare.com']",
+                solve_turnstile,
+                ("[name='cf-turnstile-response']", "[name='g-recaptcha-response']"),
             ),
         ):
             try:
@@ -228,11 +241,12 @@ class PlatformConnector(ABC):
                         continue
                 if injected:
                     logger.info(
-                        "%s: solved %s via 2Captcha", self.platform.value, marker
+                        "%s: solved %s via paid CAPTCHA solver (2Captcha/Anti-Captcha)",
+                        self.platform.value, marker,
                     )
                     return True
             except CaptchaSolveError as e:
-                logger.warning(f"{self.platform.value}: 2Captcha solve failed: {e}")
+                logger.warning(f"{self.platform.value}: paid CAPTCHA solve failed: {e}")
             except Exception as e:
                 logger.warning(f"{self.platform.value}: CAPTCHA solve attempt errored: {e}")
 
