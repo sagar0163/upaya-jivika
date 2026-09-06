@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -77,8 +77,103 @@ class LifeRecord(BaseModel):
         self.avoid.append(item)
 
 
-def generate_soul_crystal(record: LifeRecord) -> SoulCrystal:
-    """Produce a SoulCrystal from the accumulated LifeRecord."""
+#: Number of key lessons / avoided strategies a Soul Crystal may carry (issue #63).
+_MAX_LESSONS = 3
+#: Max platform certainties / task affinities carried into the next life (issue #63).
+_MAX_CARRIED = 3
+
+#: Substrings that mark an event as an outcome worth distilling into a lesson,
+#: as opposed to bookkeeping like "Debt tick: $0.50" or "State: … → …".
+_LESSON_SIGNALS = (
+    "earn",
+    "paid",
+    "fail",
+    "reject",
+    "block",
+    "scam",
+    "death",
+    "learn",
+    "debt exceeded",
+)
+#: Bookkeeping prefixes that never count as lessons (debt ticks in particular
+#: are pure noise and lack a meaningful "learn here" signal).
+_LESSON_SKIP_PREFIXES = ("debt tick:", "state:", "life ")
+
+
+def select_key_lessons(events: list[str], limit: int = _MAX_LESSONS) -> list[str]:
+    """Pick the ``limit`` most instructive events deterministically.
+
+    Outcome events (earned/failed/rejected/blocked/scammed/died — anything
+    matching :data:`_LESSON_SIGNALS`) are picked first, newest first; if
+    fewer than ``limit`` qualify, the remaining slots are filled from the
+    most recent events so the crystal's lessons read like a narrative of the
+    life's end rather than a wall of every debt tick.
+    """
+    selected: list[str] = []
+    seen: set[str] = set()
+    for ev in reversed(events):
+        low = ev.lower()
+        if any(low.startswith(p) for p in _LESSON_SKIP_PREFIXES):
+            continue
+        if any(s in low for s in _LESSON_SIGNALS) and ev not in seen:
+            selected.append(ev)
+            seen.add(ev)
+            if len(selected) >= limit:
+                return selected
+    for ev in reversed(events):
+        if len(selected) >= limit:
+            break
+        if ev not in seen:
+            selected.append(ev)
+            seen.add(ev)
+    return selected[:limit]
+
+
+def select_avoided(avoid: list[str], limit: int = _MAX_LESSONS) -> list[str]:
+    """Return at most ``limit`` avoided strategies for the Soul Crystal."""
+    return list(avoid)[:limit]
+
+
+def aggregate_top3(
+    research_scores: list[Any],
+) -> tuple[list[tuple[str, Decimal]], list[tuple[str, Decimal]]]:
+    """Aggregate all research scores into top-3 platform certainties and task
+    affinities (issue #63 ancestral carry-over).
+
+    Each platform/task keeps its highest observed value across the life's
+    research; the result is the top 3 by value — a bounded, deterministic
+    summary the next life can inherit.
+    """
+    plat_cert: dict[str, float] = {}
+    task_aff: dict[str, float] = {}
+    for rs in research_scores:
+        for p, c in (rs.platform_certainties or {}).items():
+            plat_cert[p] = max(plat_cert.get(p, 0), float(c))
+        for t, a in (rs.task_affinities or {}).items():
+            task_aff[t] = max(task_aff.get(t, 0), float(a))
+
+    def _top3(items: dict[str, float]) -> list[tuple[str, Decimal]]:
+        return sorted(
+            ((k, Decimal(str(v))) for k, v in items.items()),
+            key=lambda x: x[1],
+            reverse=True,
+        )[:_MAX_CARRIED]
+
+    return _top3(plat_cert), _top3(task_aff)
+
+
+def generate_soul_crystal(
+    record: LifeRecord,
+    research_scores: list[Any] | None = None,
+) -> SoulCrystal:
+    """Produce a SoulCrystal from the accumulated LifeRecord.
+
+    ``research_scores`` — when provided, only that life's research is distilled
+    into the top-3 platform certainties / task affinities (issue #63). Falls
+    back to loading from the persistence store for callers that don't have the
+    scores at hand. Key lessons and avoided strategies are capped at 3 each so
+    a crystal stays a bounded, distilled essence of the life.
+    """
     now = datetime.now(timezone.utc)
     lifespan = (now - record.born_at).total_seconds() / 86400
 
@@ -89,35 +184,19 @@ def generate_soul_crystal(record: LifeRecord) -> SoulCrystal:
             break
 
     # Capture top 3 platform certainties and task affinities for ancestral memory
-    top_platforms = []
-    top_tasks = []
-    try:
-        from src.persistence import create_persistence_store
-        store = create_persistence_store()
-        research_scores = store.load_research_scores()
-        
-        # Aggregate platform certainties and task affinities
-        plat_cert = {}
-        task_aff = {}
-        for rs in research_scores:
-            for p, c in rs.platform_certainties.items():
-                plat_cert[p] = max(plat_cert.get(p, 0), c)
-            for t, a in rs.task_affinities.items():
-                task_aff[t] = max(task_aff.get(t, 0), a)
-                
-# Sort and take top 3
-        top_platforms = sorted(
-            [(k, Decimal(str(v))) for k, v in plat_cert.items()],
-            key=lambda x: x[1],
-            reverse=True,
-        )[:3]
-        top_tasks = sorted(
-            [(k, Decimal(str(v))) for k, v in task_aff.items()],
-            key=lambda x: x[1],
-            reverse=True,
-        )[:3]
-    except Exception:
-        pass
+    if research_scores is None:
+        top_platforms: list[tuple[str, Decimal]] = []
+        top_tasks: list[tuple[str, Decimal]] = []
+        try:
+            from src.persistence import create_persistence_store
+
+            store = create_persistence_store()
+            research_scores = store.load_research_scores()
+            top_platforms, top_tasks = aggregate_top3(research_scores)
+        except Exception:
+            pass
+    else:
+        top_platforms, top_tasks = aggregate_top3(research_scores)
 
     return SoulCrystal(
         life=record.life_number,
@@ -128,13 +207,74 @@ def generate_soul_crystal(record: LifeRecord) -> SoulCrystal:
         peak_state=record.peak_state,
         best_platform=record.best_platform,
         best_daily_avg=record.best_daily_avg,
-        failed_strategies=record.failed_strategies,
-        avoid=record.avoid,
-        key_lessons=record.events.copy(),
+        failed_strategies=record.failed_strategies[:_MAX_LESSONS],
+        avoid=select_avoided(record.avoid),
+        key_lessons=select_key_lessons(record.events),
         cause_of_death=cause,
         platform_certainties=top_platforms,
         task_affinities=top_tasks,
     )
+
+
+def carry_over_top3(
+    crystals: list[SoulCrystal],
+) -> tuple[list[tuple[str, Decimal]], list[tuple[str, Decimal]]]:
+    """Aggregate the carried certainties/affinities from all soul crystals.
+
+    Every crystal's per-life top 3 is merged, keeping the highest value per
+    platform/task, and the result is bounded to the top 3 again — so across
+    many lives the inherited block stays a fixed size (never god-mode, never
+    overflow) and fresh, higher-certainty research in the *current* life
+    naturally replaces stale inherited wisdom on the next death.
+    """
+    plat_cert: dict[str, Decimal] = {}
+    task_aff: dict[str, Decimal] = {}
+    for crystal in crystals:
+        for p, c in crystal.platform_certainties:
+            plat_cert[p] = max(plat_cert.get(p, Decimal("0")), c)
+        for t, a in crystal.task_affinities:
+            task_aff[t] = max(task_aff.get(t, Decimal("0")), a)
+
+    def _top3_sorted(items: dict[str, Decimal]) -> list[tuple[str, Decimal]]:
+        return sorted(items.items(), key=lambda x: x[1], reverse=True)[:_MAX_CARRIED]
+
+    return _top3_sorted(plat_cert), _top3_sorted(task_aff)
+
+
+def build_carry_over_research_scores(crystals: list[SoulCrystal]) -> list[Any]:
+    """Seed a new life's research table from past lives' carried top-3.
+
+    Returns a single :class:`~src.persistence.ResearchScore` (or an empty list
+    when there is no inheritance yet) whose certainties/affinities are exactly
+    the aggregated top-3 carried over from the soul-crystal archive. The
+    TaskScorer reads research scores directly, so the reborn life immediately
+    prefers what past lives' research deemed most certain — without a fresh
+    research cycle — but only the bounded top-3, so it still starts far from
+    god-mode.
+    """
+    if not crystals:
+        return []
+    platforms, tasks = carry_over_top3(crystals)
+    if not platforms and not tasks:
+        return []
+
+    from src.persistence import ResearchScore
+
+    return [
+        ResearchScore(
+            topic="ancestral_carry_over",
+            query="inherent top-3 platform certainties / task affinities from past lives",
+            findings=[],
+            summary=(
+                "Ancestral carry-over: top-3 platform certainties and task "
+                "affinities inherited from past soul crystals (issue #63)."
+            ),
+            confidence=min((c for _, c in platforms), default=0.0),
+            sources=[],
+            platform_certainties={p: float(c) for p, c in platforms},
+            task_affinities={t: float(a) for t, a in tasks},
+        )
+    ]
 
 
 def generate_death_log(record: LifeRecord, final_debt: Decimal) -> DeathLog:
@@ -205,12 +345,22 @@ class ReincarnationEngine:
         )
         return self.current_record
 
-    def on_death(self, final_debt: Decimal) -> SoulCrystal:
-        """Handle death: generate crystal from current record, archive it."""
+    def on_death(
+        self,
+        final_debt: Decimal,
+        research_scores: list[Any] | None = None,
+    ) -> SoulCrystal:
+        """Handle death: generate crystal from current record, archive it.
+
+        ``research_scores`` (issue #63): the dying life's own research scores,
+        distilled into the crystal's top-3 platform certainties / task
+        affinities so the next life inherits exactly what this life learned.
+        Falls back to ``generate_soul_crystal``'s store-load when omitted.
+        """
         if self.current_record is None:
             raise RuntimeError("No active life to end")
 
-        crystal = generate_soul_crystal(self.current_record)
+        crystal = generate_soul_crystal(self.current_record, research_scores)
         self.soul_crystals.append(crystal)
         return crystal
 

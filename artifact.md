@@ -310,21 +310,42 @@ Three layers — each with a different job.
 
 ## 11. Reincarnation System
 
-Death is not the end.
+Death is not the end — unless the operator turns the survival mechanic off.
+
+### 11.0 Optional Survival Mode (Issue #63)
+
+Reincarnation is **opt-in** and under operator control at all times:
+
+- **`SURVIVAL_MODE` env var** is the boot-time default only: `0` = normal
+  earning mode (death permanently ends the agent), `1` (default) = full
+  survival/reincarnation framework.
+- **Runtime, persisted toggle** — `GET/POST /api/survival-mode` (dashboard
+  switch) changes the mode on the fly. The choice is stored in Supabase
+  `app_settings` and wins over the env default on every later startup.
+- Toggling applies from the **next death onward**; the engine never
+  reincarnates a life that was still alive when the mode was flipped off,
+  and never leaves the loop half-initialised when the mode is flipped on.
+
+With the mode **off**, dying life N writes no crystal and is not respawned.
+With the mode **on**, the full sequence below runs.
 
 ### Death sequence
 ```
 Debt hits $10.00
     → Write death-note.md to GitHub diary
-    → NVIDIA NIM reads all life logs (Supabase + GitHub + HuggingFace)
-    → Generates Soul Crystal JSON
+    → Generate Soul Crystal JSON — captures THIS life's research top-3
     → Push soul-crystal.json to GitHub (life-00N/)
     → Push to HuggingFace soul-crystals.jsonl
     → Tag repo: life-00N-death
+    → Wipe hot-memory research table, re-seed from carry-over top-3
     → Shutdown
 ```
 
 ### Soul Crystal contents
+
+Bounded and distilled — always exactly 3 `key_lessons` and up to 3 `avoid`
+entries, plus the life's **top 3** platform certainties and task affinities.
+
 ```json
 {
   "life": 3,
@@ -335,13 +356,16 @@ Debt hits $10.00
   "peak_state": "surviving",
   "best_platform": "Clickworker",
   "best_daily_avg": 0.45,
-  "failed_strategies": ["Fiverr writing - rejected gigs", "Medium - too slow to pay"],
+  "failed_strategies": ["Fiverr writing - rejected gigs"],
   "avoid": ["tasks taking >2 days", "platforms requiring video KYC"],
   "key_lessons": [
     "Data annotation pays faster than content writing",
-    "Never enter Critical state with a slow task in queue"
+    "Blocked by upwork — never rejoin",
+    "Earned $1.25 on toloka"
   ],
-  "cause_of_death": "3-day Fiverr gig rejected at debt $8.50"
+  "cause_of_death": "3-day Fiverr gig rejected at debt $8.50",
+  "platform_certainties": [["clickworker", 0.95], ["toloka", 0.80], ["prolific", 0.70]],
+  "task_affinities": [["microtask", 0.80], ["survey", 0.50], ["writing", 0.30]]
 }
 ```
 
@@ -353,6 +377,11 @@ New life starts (life-00N+1)
     → Inject Ancestral Memory into system prompt
     → Apply Respawn Policy: CARRY_FORWARD restores empirical task scores,
       FRESH_SLATE starts a clean task-knowledge slate (src/respawn_policy.py)
+    → Seed research table from crystal carry-over: the aggregated top-3
+      platform certainties + top-3 task affinities become the new life's
+      initial ResearchScore (topic "ancestral_carry_over") — bounded, so a
+      life starts knowing what past lives found most certain without god-mode;
+      fresh research in the new life always overrides inherited wisdom
     → Freshness gate: cross-reference old wisdom against current DDG research
     → Tag repo: life-00N+1-born
     → Begin

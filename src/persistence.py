@@ -233,6 +233,16 @@ class PersistenceStore(ABC):
     def load_research_scores(self) -> list[ResearchScore]: ...
 
     @abstractmethod
+    def clear_research_scores(self) -> None:
+        """Remove the research-score table (issue #63).
+
+        Research scores encode the *current* life's read on platform
+        certainty. On reincarnation the dying life's scores are wiped and the
+        next life is re-seeded from the soul-crystal carry-over (top-3 only),
+        so inherited wisdom is bounded and fresh research still dominates.
+        """
+
+    @abstractmethod
     def load_debt_state(self) -> Optional[DebtState]: ...
 
     @abstractmethod
@@ -258,6 +268,18 @@ class PersistenceStore(ABC):
 
     @abstractmethod
     def load_events(self) -> list[str]: ...
+
+    @abstractmethod
+    def save_survival_mode(self, enabled: bool) -> None:
+        """Persist the survival-mode toggle (issue #63).
+
+        The toggle is operator-visible, so it must survive restarts and be
+        readable on boot to override the env-var default.
+        """
+
+    @abstractmethod
+    def load_survival_mode(self) -> Optional[bool]:
+        """Return the persisted survival-mode value, or None if never set."""
 
     @abstractmethod
     def clear(self) -> None:
@@ -346,6 +368,7 @@ class InMemoryStore(PersistenceStore):
         self._life_record: dict[str, Any] | None = None
         self._soul_crystals: list[dict[str, Any]] = []
         self._events: list[str] = []
+        self._survival_mode: Optional[bool] = None
         self._processed_payments: dict[str, dict[str, Any]] = {}
         self._research_scores: list[dict[str, Any]] = []
         self._payment_lock = threading.Lock()
@@ -386,6 +409,12 @@ class InMemoryStore(PersistenceStore):
 
     def load_events(self) -> list[str]:
         return list(self._events)
+
+    def save_survival_mode(self, enabled: bool) -> None:
+        self._survival_mode = bool(enabled)
+
+    def load_survival_mode(self) -> Optional[bool]:
+        return self._survival_mode
 
     def clear(self) -> None:
         # Preserve the permanent soul-crystal archive (§10 Layer 2/3): it must
@@ -447,6 +476,10 @@ class InMemoryStore(PersistenceStore):
     def load_research_scores(self) -> list[ResearchScore]:
         """Load all research scores from the store."""
         return [_research_score_from_dict(d) for d in self._research_scores]
+
+    def clear_research_scores(self) -> None:
+        """Remove all research scores from the store."""
+        self._research_scores.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +558,10 @@ class SupabaseStore(PersistenceStore):
             id    TEXT PRIMARY KEY,
             data  JSONB NOT NULL,
             created_at TIMESTAMPTZ DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS app_settings (
+            id    TEXT PRIMARY KEY,
+            data  JSONB NOT NULL
         );
         CREATE TABLE IF NOT EXISTS research_scores (
             id    BIGSERIAL PRIMARY KEY,
@@ -607,6 +644,9 @@ class SupabaseStore(PersistenceStore):
     def load_research_scores(self) -> list[ResearchScore]:
         return [_research_score_from_dict(d) for d in self._load_all("research_scores")]
 
+    def clear_research_scores(self) -> None:
+        self._delete_all("research_scores")
+
     # -- events -------------------------------------------------------------
 
     def save_events(self, events: list[str]) -> None:
@@ -619,6 +659,20 @@ class SupabaseStore(PersistenceStore):
     def load_events(self) -> list[str]:
         rows = self._load_all("events")
         return [r.get("text", "") for r in rows]
+
+    # -- app_settings -------------------------------------------------------
+
+    def save_survival_mode(self, enabled: bool) -> None:
+        self._upsert_row("app_settings", "survival_mode", {"enabled": bool(enabled)})
+
+    def load_survival_mode(self) -> Optional[bool]:
+        d = self._load_row("app_settings", "survival_mode")
+        if d is None:
+            return None
+        try:
+            return bool(d["enabled"])
+        except (KeyError, TypeError, ValueError):
+            return None
 
     # -- lifecycle ----------------------------------------------------------
 

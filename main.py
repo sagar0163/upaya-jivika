@@ -15,9 +15,11 @@ import os
 from contextlib import asynccontextmanager
 
 # Issue #63: Optional Survival Mode toggle
-# When SURVIVAL_MODE=0, the agent operates in normal earning mode without reincarnation.
-# When SURVIVAL_MODE=1 (default), the full survival/reincarnation framework is active.
-SURVIVAL_MODE = os.environ.get("SURVIVAL_MODE", "1")
+# SURVIVAL_MODE=0 → normal earning mode without reincarnation.
+# SURVIVAL_MODE=1 (default) → survival/reincarnation framework active.
+# The env var is only the *boot-time default*; once the operator toggles the
+# mode via /api/survival-mode it is persisted in app_settings and wins on
+# every later startup.
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -48,7 +50,11 @@ from src.persistence import PersistenceStore, create_persistence_store
 from src.research_loop import ResearchAgent, persist_research_scores
 from src.respawn_policy import RespawnPolicyEngine
 from src.scam_detection import ScamEvent, ScamTracker, ScamType
-from src.soul_crystal import LifeRecord, ReincarnationEngine
+from src.soul_crystal import (
+    LifeRecord,
+    ReincarnationEngine,
+    build_carry_over_research_scores,
+)
 from src.state_machine import SurvivalStateMachine, min_certainty
 from src.task_executor import TaskExecutor
 from src.task_scorer import Platform as EarningPlatform
@@ -152,18 +158,49 @@ class SurvivalLoop:
         self._event_log: list[str] = []
         self._running = False
         self.ancestral_memory: AncestralMemory | None = None
-        self._survival_mode = SURVIVAL_MODE == "1"
 
-        # Issue #63: When survival mode is off, skip reincarnation machinery
-        # and always start fresh at life 1 without ancestral memory carry-over.
-        if not self._survival_mode:
-            logger.info("Survival mode disabled — operating in normal earning mode")
-            # Clear reincarnation-related state
-            self.reincarnation = None
-            self.respawn = None
+        # Issue #63: survival mode is an operator-facing, persisted toggle.
+        # The env var is the boot-time default; once set via the API/UI it is
+        # stored in app_settings and survives restarts. The engine and respawn
+        # machinery are always constructed (a mid-life toggle must not leave
+        # None where a future reincarnation would dereference), but every
+        # death-time decision gates on self._survival_mode.
+        persisted_mode = self.persistence.load_survival_mode()
+        self._survival_mode = (
+            persisted_mode
+            if persisted_mode is not None
+            else os.environ.get("SURVIVAL_MODE", "1") == "1"
+        )
+        if self._survival_mode:
+            logger.info(
+                "Survival mode enabled (env default=%s) — reincarnation with "
+                "ancestral carry-over is active",
+                os.environ.get("SURVIVAL_MODE", "1"),
+            )
+        else:
+            logger.info(
+                "Survival mode disabled — operating in normal earning mode "
+                "without reincarnation / ancestral memory carry-over"
+            )
 
         # Restore persisted state
         self._restore_state()
+
+    def set_survival_mode(self, enabled: bool) -> None:
+        """Toggle survival mode at runtime (issue #63).
+
+        Applies from the next death onward and is persisted to ``app_settings``
+        so the choice survives restarts. Reincarnation/respawn machinery stays
+        constructed either way, so a mid-life toggle never leaves the loop in a
+        half-initialised state.
+        """
+        enabled = bool(enabled)
+        self._survival_mode = enabled
+        self.persistence.save_survival_mode(enabled)
+        logger.info("Survival mode set to %s (persisted)", enabled)
+        self._event_log.append(f"Survival mode {'enabled' if enabled else 'disabled'}")
+        self._persist_all()
+        self._broadcast_event("survival_mode")
 
     def _broadcast_event(self, event_name: str) -> None:
         if self.ws_manager:
@@ -242,7 +279,15 @@ class SurvivalLoop:
 
     def _start_fresh_life(self) -> None:
         """Begin life 1 (or the next life) with clean hot-memory state."""
-        life_num = self.reincarnation.next_life_number()
+        if self._survival_mode:
+            life_num = self.reincarnation.next_life_number()
+        else:
+            # Issue #63: with the toggle off this is a classic single-life agent —
+            # always life 1, and the in-memory crystal archive is not used as
+            # ancestral-carry-over (the persisted §10 archive is preserved for
+            # if/when the operator re-enables survival mode).
+            life_num = 1
+            self.reincarnation.soul_crystals = []
         self.debt_engine.reset_for_new_life(life_num)
         self.state_machine.reset()
         self.wallet = Wallet()
@@ -335,8 +380,12 @@ class SurvivalLoop:
 
         if self._survival_mode:
             # Generate soul crystal and reincarnate
-            # Generate soul crystal
-            crystal = self.reincarnation.on_death(state.debt)
+            # Generate soul crystal — pass this life's research scores so the
+            # crystal captures only THIS life's top-3 platform certainties /
+            # task affinities as its ancestral carry-over (issue #63), rather
+            # than aggregating the inherited seed into its own lessons.
+            research_scores = self.persistence.load_research_scores()
+            crystal = self.reincarnation.on_death(state.debt, research_scores)
             self.persistence.save_soul_crystal(crystal)
 
             # Persist final death state
@@ -404,6 +453,16 @@ class SurvivalLoop:
         # Wipe hot-memory state; the permanent soul-crystal archive is
         # preserved by clear() (and lives on in the engine's memory).
         self.persistence.clear()
+
+        # Issue #63 ancestral carry-over: the dying life's research scores are
+        # wiped and the new life is re-seeded from the top-3 platform
+        # certainties / task affinities that THIS life's research distilled
+        # into its soul crystal. Bounded to 3 per axis, so a reborn agent
+        # inherits what past lives found most certain without god-mode: fresh
+        # research in the new life still dominates the seed as it accrues.
+        self.persistence.clear_research_scores()
+        for score in build_carry_over_research_scores(self.reincarnation.soul_crystals):
+            self.persistence.save_research_score(score)
 
         # Load ancestral memory — compress all past soul crystals
         # into a bounded block (never blocks a new life from starting)
@@ -955,11 +1014,19 @@ class SurvivalLoop:
 
     def get_status(self) -> dict[str, Any]:
         """Return a snapshot of the current survival state."""
+        carried_platforms: list[str] = []
+        carried_tasks: list[str] = []
+        if self._survival_mode:
+            for score in self.persistence.load_research_scores():
+                if score.topic == "ancestral_carry_over":
+                    carried_platforms.extend(score.platform_certainties.keys())
+                    carried_tasks.extend(score.task_affinities.keys())
         return {
             "alive": self.debt_engine.alive,
             "life_number": self.debt_engine.state.life_number,
             "debt": str(self.debt_engine.debt),
             "state": self.state_machine.state.value,
+            "survival_mode": self._survival_mode,
             "wallet_locked": str(self.wallet.locked),
             "wallet_free": str(self.wallet.free),
             "wallet_debt": str(self.wallet.debt),
@@ -970,6 +1037,10 @@ class SurvivalLoop:
             "soul_crystals": len(self.reincarnation.soul_crystals),
             "respawn_policy": self.respawn.policy.value,
             "task_knowledge_entries": len(self.respawn),
+            "ancestral_carry_over": {
+                "platforms": sorted(carried_platforms),
+                "task_types": sorted(carried_tasks),
+            },
         }
 
 
@@ -1272,3 +1343,49 @@ async def withdraw_endpoint(request: Request):
         return loop.process_withdrawal(pool, amount)
     except (WithdrawalError, WalletError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Issue #63 — Optional Survival Mode (operator toggle)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/survival-mode")
+async def get_survival_mode_endpoint() -> dict[str, Any]:
+    """Return whether survival / reincarnation mode is currently active."""
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+    return {"enabled": loop._survival_mode}
+
+
+@app.post("/api/survival-mode", dependencies=[Depends(require_api_token)])
+async def set_survival_mode_endpoint(request: Request) -> dict[str, Any]:
+    """Toggle survival / reincarnation mode at runtime (issue #63).
+
+    Body: ``{"enabled": true|false}``.
+
+    The change is persisted (survives restarts) and applies from the next
+    death onward:
+    - ``enabled=true``: a death produces a soul crystal and the agent is
+      reincarnated with ancestral carry-over (top-3 platform certainties +
+      top-3 task affinities seeded into the new life's research table).
+    - ``enabled=false``: the agent stays alive earning normally, but on death
+      it ends permanently — no reincarnation, no carry-over.
+    """
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Malformed JSON body") from exc
+    if not isinstance(payload, dict) or "enabled" not in payload:
+        raise HTTPException(status_code=400, detail="Body must be {\"enabled\": bool}")
+    enabled = payload["enabled"]
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="\"enabled\" must be a boolean")
+
+    loop.set_survival_mode(enabled)
+    return {"enabled": loop._survival_mode, "persisted": True}

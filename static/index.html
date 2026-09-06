@@ -168,6 +168,71 @@
 
     @keyframes pulse-bg { 0%, 100% { box-shadow: 0 0 0 0 var(--danger-dim); } 50% { box-shadow: 0 0 20px 4px var(--danger-dim); } }
 
+    /* Survival Mode (issue #63) */
+    .survival-mode-card { grid-column: span 1; }
+    .survival-mode-card .mode-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .survival-mode-card .mode-label { font-weight: 600; }
+    .survival-mode-card .mode-status { font-size: 0.8rem; }
+    .survival-mode-card .mode-status.on { color: var(--accent); }
+    .survival-mode-card .mode-status.off { color: var(--fg-muted); }
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 52px;
+      height: 28px;
+      flex-shrink: 0;
+    }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .toggle-switch .toggle-slider {
+      position: absolute; inset: 0;
+      cursor: pointer;
+      background: var(--border);
+      border-radius: 28px;
+      transition: background 0.3s;
+    }
+    .toggle-switch .toggle-slider::before {
+      content: '';
+      position: absolute; left: 3px; top: 3px;
+      width: 22px; height: 22px;
+      background: var(--bg);
+      border-radius: 50%;
+      transition: transform 0.3s;
+    }
+    .toggle-switch input:checked + .toggle-slider {
+      background: var(--accent);
+    }
+    .toggle-switch input:checked + .toggle-slider::before {
+      transform: translateX(24px);
+    }
+    .carry-over-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .carry-over-chips .chip {
+      font-size: 0.72rem;
+      padding: 3px 8px;
+      border-radius: 100px;
+      background: var(--accent-dim);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      font-family: var(--mono);
+    }
+    .carry-over-chips .chip.off {
+      background: var(--danger-dim);
+      color: var(--danger);
+      border: 1px solid var(--danger);
+    }
+    .carry-over-chips .chip-empty { font-size: 0.75rem; color: var(--fg-muted); }
+    .mode-note { font-size: 0.72rem; color: var(--fg-muted); margin-top: 8px; line-height: 1.4; }
+
     /* Debt Gauge */
     .debt-gauge { grid-column: span 1; }
     .gauge-container { position: relative; }
@@ -335,6 +400,25 @@
         <div class="state-badge" id="stateBadge">
           <span class="icon" id="stateIcon">●</span>
           <span id="stateText">Initialising...</span>
+        </div>
+      </div>
+
+      <!-- Survival Mode (issue #63) -->
+      <div class="card survival-mode-card">
+        <div class="mode-row">
+          <div>
+            <div class="mode-label">Survival Mode</div>
+            <div class="mode-status" id="survivalModeStatus">…</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="survivalModeToggle" aria-label="Toggle survival mode">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="mode-note">Determines whether death reincarnates with learning carry-over or ends the agent.</div>
+        <div class="mode-note" id="soulCrystalCount"></div>
+        <div class="carry-over-chips" id="carryOverChips">
+          <span class="chip-empty">No carry-over yet this life.</span>
         </div>
       </div>
 
@@ -509,6 +593,10 @@
       stateBadge: document.getElementById('stateBadge'),
       stateIcon: document.getElementById('stateIcon'),
       stateText: document.getElementById('stateText'),
+      survivalModeToggle: document.getElementById('survivalModeToggle'),
+      survivalModeStatus: document.getElementById('survivalModeStatus'),
+      soulCrystalCount: document.getElementById('soulCrystalCount'),
+      carryOverChips: document.getElementById('carryOverChips'),
       debtValue: document.getElementById('debtValue'),
       debtPct: document.getElementById('debtPct'),
       gaugeProgress: document.getElementById('gaugeProgress'),
@@ -600,6 +688,40 @@
         els.stateBadge.className = 'state-badge ' + cfg.class;
         els.stateIcon.textContent = cfg.icon;
         els.stateText.textContent = cfg.label;
+      }
+
+      // Survival mode (issue #63)
+      if (s.survival_mode !== undefined) {
+        const on = !!s.survival_mode;
+        els.survivalModeToggle.checked = on;
+        els.survivalModeStatus.textContent = on ? 'ON — reincarnation + carry-over' : 'OFF — death ends the agent';
+        els.survivalModeStatus.className = 'mode-status ' + (on ? 'on' : 'off');
+      }
+
+      if (s.soul_crystals !== undefined) {
+        els.soulCrystalCount.textContent = 'Soul crystals: ' + s.soul_crystals;
+      }
+
+      if (s.ancestral_carry_over !== undefined) {
+        const carry = s.ancestral_carry_over || {};
+        const platforms = carry.platforms || [];
+        const tasks = carry.task_types || [];
+        els.carryOverChips.innerHTML = '';
+        if (!platforms.length && !tasks.length) {
+          const empty = document.createElement('span');
+          empty.className = 'chip-empty';
+          empty.textContent = 'No carry-over yet this life.';
+          els.carryOverChips.appendChild(empty);
+        } else {
+          const addChip = (text, off) => {
+            const chip = document.createElement('span');
+            chip.className = 'chip' + (off ? ' off' : '');
+            chip.textContent = text;
+            els.carryOverChips.appendChild(chip);
+          };
+          platforms.forEach(p => addChip('P: ' + p));
+          tasks.forEach(t => addChip('T: ' + t));
+        }
       }
 
       // Debt gauge
@@ -751,6 +873,33 @@
     els.rebornBtn.addEventListener('click', () => {
       els.deathOverlay.classList.remove('active');
       // The server handles reincarnation automatically; this is just dismissing the overlay
+    });
+
+    // ---- Survival Mode Toggle (issue #63) ----
+    els.survivalModeToggle.addEventListener('change', async (e) => {
+      const enabled = e.target.checked;
+      e.target.disabled = true;
+      els.survivalModeStatus.textContent = 'Saving…';
+      try {
+        const resp = await authedFetch('/api/survival-mode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.detail || 'Failed to toggle survival mode');
+        }
+        els.survivalModeStatus.textContent = enabled ? 'ON — reincarnation + carry-over' : 'OFF — death ends the agent';
+        els.survivalModeStatus.className = 'mode-status ' + (enabled ? 'on' : 'off');
+        els.survivalModeToggle.checked = !!data.enabled;
+      } catch (err) {
+        els.survivalModeToggle.checked = !enabled; // revert
+        els.survivalModeStatus.textContent = err.message;
+        els.survivalModeStatus.className = 'mode-status off';
+      } finally {
+        e.target.disabled = false;
+      }
     });
 
     // ---- Withdrawal ----
