@@ -13,6 +13,11 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+
+# Issue #63: Optional Survival Mode toggle
+# When SURVIVAL_MODE=0, the agent operates in normal earning mode without reincarnation.
+# When SURVIVAL_MODE=1 (default), the full survival/reincarnation framework is active.
+SURVIVAL_MODE = os.environ.get("SURVIVAL_MODE", "1")
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -147,6 +152,15 @@ class SurvivalLoop:
         self._event_log: list[str] = []
         self._running = False
         self.ancestral_memory: AncestralMemory | None = None
+        self._survival_mode = SURVIVAL_MODE == "1"
+
+        # Issue #63: When survival mode is off, skip reincarnation machinery
+        # and always start fresh at life 1 without ancestral memory carry-over.
+        if not self._survival_mode:
+            logger.info("Survival mode disabled — operating in normal earning mode")
+            # Clear reincarnation-related state
+            self.reincarnation = None
+            self.respawn = None
 
         # Restore persisted state
         self._restore_state()
@@ -319,37 +333,49 @@ class SurvivalLoop:
         if alert:
             logger.warning("ALERT [%s] %s", alert.level.value.upper(), alert.message)
 
-        # Generate soul crystal
-        crystal = self.reincarnation.on_death(state.debt)
-        self.persistence.save_soul_crystal(crystal)
+        if self._survival_mode:
+            # Generate soul crystal and reincarnate
+            # Generate soul crystal
+            crystal = self.reincarnation.on_death(state.debt)
+            self.persistence.save_soul_crystal(crystal)
 
-        # Persist final death state
-        self._persist_all()
+            # Persist final death state
+            self._persist_all()
 
-        logger.info("Soul crystal generated for life %d", state.life_number)
-        self._broadcast_event("death")
+            logger.info("Soul crystal generated for life %d", state.life_number)
+            self._broadcast_event("death")
 
-        # Write death note + soul crystal to GitHub diary
-        try:
-            self.diary.on_death(
-                life_number=state.life_number,
-                final_debt=state.debt,
-                total_earned=self._life_record.total_earned if self._life_record else Decimal("0"),
-                peak_state=self._life_record.peak_state if self._life_record else "thriving",
-                best_platform=self._life_record.best_platform if self._life_record else "",
-                events=list(self._event_log),
-                failed_strategies=self._life_record.failed_strategies if self._life_record else [],
-                key_lessons=self._life_record.events if self._life_record else [],
-                avoid=self._life_record.avoid if self._life_record else [],
-                soul_crystal=crystal,
+            # Write death note + soul crystal to GitHub diary
+            try:
+                self.diary.on_death(
+                    life_number=state.life_number,
+                    final_debt=state.debt,
+                    total_earned=self._life_record.total_earned if self._life_record else Decimal("0"),
+                    peak_state=self._life_record.peak_state if self._life_record else "thriving",
+                    best_platform=self._life_record.best_platform if self._life_record else "",
+                    events=list(self._event_log),
+                    failed_strategies=self._life_record.failed_strategies if self._life_record else [],
+                    key_lessons=self._life_record.events if self._life_record else [],
+                    avoid=self._life_record.avoid if self._life_record else [],
+                    soul_crystal=crystal,
+                )
+            except Exception:
+                logger.exception("Diary write failed on death")
+
+            # --- Reincarnation ---
+            # Flush remaining events before switching life in the archive
+            self.cold_archive.flush()
+            self._reincarnate(state)
+        else:
+            # Survival mode off — just end the agent, no reincarnation
+            logger.info("Survival mode off — agent ending, no reincarnation")
+            self._event_log.append(
+                f"END: debt ${state.debt}, life {state.life_number} "
+                "(survival mode off, no reincarnation)"
             )
-        except Exception:
-            logger.exception("Diary write failed on death")
-
-        # --- Reincarnation ---
-        # Flush remaining events before switching life in the archive
-        self.cold_archive.flush()
-        self._reincarnate(state)
+            self._persist_all()
+            self._broadcast_event("death")
+            # Do NOT reincarnate - agent just ends
 
     def _reincarnate(self, state: DebtState) -> None:
         """Reset hot-memory state for a new life.
