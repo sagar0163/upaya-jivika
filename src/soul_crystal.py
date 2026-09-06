@@ -31,6 +31,9 @@ class SoulCrystal(BaseModel):
     avoid: list[str] = Field(default_factory=list)
     key_lessons: list[str] = Field(default_factory=list)
     cause_of_death: str = ""
+    # Ancestral memory carry-over: top 3 platform certainties and top 3 task-type affinities
+    platform_certainties: list[tuple[str, Decimal]] = Field(default_factory=list)  # (platform, certainty) top 3
+    task_affinities: list[tuple[str, Decimal]] = Field(default_factory=list)  # (task_type, affinity) top 3
 
 
 class DeathLog(BaseModel):
@@ -85,6 +88,29 @@ def generate_soul_crystal(record: LifeRecord) -> SoulCrystal:
             cause = ev
             break
 
+    # Capture top 3 platform certainties and task affinities for ancestral memory
+    top_platforms = []
+    top_tasks = []
+    try:
+        from src.persistence import create_persistence_store
+        store = create_persistence_store()
+        research_scores = store.load_research_scores()
+        
+        # Aggregate platform certainties and task affinities
+        plat_cert = {}
+        task_aff = {}
+        for rs in research_scores:
+            for p, c in rs.platform_certainties.items():
+                plat_cert[p] = max(plat_cert.get(p, 0), c)
+            for t, a in rs.task_affinities.items():
+                task_aff[t] = max(task_aff.get(t, 0), a)
+                
+        # Sort and take top 3
+        top_platforms = sorted([(k, Decimal(str(v))) for k, v in plat_cert.items()], key=lambda x: x[1], reverse=True)[:3]
+        top_tasks = sorted([(k, Decimal(str(v))) for k, v in task_aff.items()], key=lambda x: x[1], reverse=True)[:3]
+    except Exception as e:
+        pass
+
     return SoulCrystal(
         life=record.life_number,
         born=record.born_at,
@@ -98,6 +124,8 @@ def generate_soul_crystal(record: LifeRecord) -> SoulCrystal:
         avoid=record.avoid,
         key_lessons=record.events.copy(),
         cause_of_death=cause,
+        platform_certainties=top_platforms,
+        task_affinities=top_tasks,
     )
 
 
@@ -138,6 +166,11 @@ def build_ancestral_memory(crystals: list[SoulCrystal]) -> str:
             lines.append(f"  FAILED: {fail}")
         for avoid_item in c.avoid:
             lines.append(f"  AVOID: {avoid_item}")
+        
+        if c.platform_certainties:
+            lines.append(f"  Top Platforms (certainty): " + ", ".join([f"{p} ({cert:.2f})" for p, cert in c.platform_certainties]))
+        if c.task_affinities:
+            lines.append(f"  Top Task Affinities: " + ", ".join([f"{t} ({aff:.2f})" for t, aff in c.task_affinities]))
 
     total_lives = len(crystals)
     total_earned = sum(c.total_earned for c in crystals)

@@ -992,11 +992,27 @@ def health():
     loop = _loop
     if loop is None:
         return {"status": "initialising"}
+        
+    next_trigger = None
+    if hasattr(loop, '_scheduler') and loop._scheduler:
+        job = loop._scheduler.get_job('research_trigger')
+        if job and job.next_run_time:
+            next_trigger = job.next_run_time.isoformat()
+            
+    last_earnings = "0.00"
+    if hasattr(loop, 'audit_trail') and loop.audit_trail:
+        for entry in reversed(loop.audit_trail.entries()):
+            if entry.kind == "task_executed" and entry.outcome.get("success"):
+                last_earnings = str(entry.outcome.get("amount_earned", "0.00"))
+                break
+                
     return {
         "status": "alive" if loop.debt_engine.alive else "dead",
         "life": loop.debt_engine.state.life_number,
         "debt": str(loop.debt_engine.debt),
         "survival_state": loop.state_machine.state.value,
+        "last_earnings": last_earnings,
+        "next_research_trigger": next_trigger,
     }
 
 @app.get("/status")

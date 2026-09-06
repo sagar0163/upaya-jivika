@@ -24,6 +24,7 @@ from src.brain_router import (
     TaskType,
     get_brain_router,
 )
+from src.persistence import create_persistence_store, ResearchScore
 
 logger = logging.getLogger(__name__)
 
@@ -433,9 +434,64 @@ class ResearchLoop:
                     f"Sources: {len(result.sources)}"
                 )
 
+            # Save platform certainties and task affinities to DB for feedback loop
+            persistence = create_persistence_store()
+            for result in results:
+                # Extract platform certainties from findings and summary
+                platform_certainties = {}
+                task_affinities = {}
+                
+                # Build platform certainties from research findings
+                for finding in result.findings[:3]:  # Top 3 findings
+                    url = finding.get('url', '')
+                    if 'clickworker' in url.lower():
+                        platform_certainties['clickworker'] = result.confidence
+                    elif 'toloka' in url.lower():
+                        platform_certainties['toloka'] = result.confidence
+                    elif 'prolific' in url.lower():
+                        platform_certainties['prolific'] = result.confidence
+                    elif 'appen' in url.lower() or 'dataannotation' in url.lower():
+                        platform_certainties['appen'] = result.confidence
+                    elif 'upwork' in url.lower():
+                        platform_certainties['upwork'] = result.confidence
+                    elif 'fiverr' in url.lower():
+                        platform_certainties['fiverr'] = result.confidence
+                    elif 'github' in url.lower() or 'gitcoin' in url.lower():
+                        platform_certainties['github_bounties'] = result.confidence
+                
+                # Build task affinities from summary keywords
+                summary_lower = result.summary.lower()
+                if 'microtask' in summary_lower or 'clickworker' in summary_lower:
+                    task_affinities['microtask'] = 0.05
+                if 'survey' in summary_lower or 'prolific' in summary_lower:
+                    task_affinities['survey'] = 0.05
+                if 'data annotation' in summary_lower or 'appen' in summary_lower:
+                    task_affinities['data_annotation'] = 0.05
+                if 'writing' in summary_lower or 'upwork' in summary_lower or 'fiverr' in summary_lower:
+                    task_affinities['writing'] = 0.05
+                if 'coding' in summary_lower or 'github' in summary_lower or 'gitcoin' in summary_lower:
+                    task_affinities['coding'] = 0.05
+                if 'payrate' in summary_lower or 'pay' in summary_lower:
+                    task_affinities['pay_rate_bonus'] = 0.03
+
+                research_score = ResearchScore(
+                    topic=result.topic.value,
+                    query=result.query,
+                    findings=result.findings,
+                    summary=result.summary,
+                    confidence=result.confidence,
+                    sources=result.sources,
+                    timestamp=result.timestamp,
+                    platform_certainties=platform_certainties,
+                    task_affinities=task_affinities,
+                )
+                persistence.save_research_score(research_score)
+
             # In a real system, this would feed into task_scorer.py
             # For now, just log
             logger.info(f"Research cycle complete. {len(results)} topics researched.")
+            # Platform certainties and task affinities are now saved to DB
+            # for the task scorer to use in future task selection
 
         except Exception as e:
             logger.error(f"Research cycle failed: {e}")

@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, Field
+from src.persistence import create_persistence_store, ResearchScore
 
 from src.audit_trail import AuditTrail
 from src.guardrails import EthicalGuardrail, GuardrailVerdict, get_guardrail
@@ -315,6 +316,92 @@ class TaskScorer:
     ) -> list[TaskScore]:
         """Return only candidates that pass the threshold."""
         return [s for s in self.score_batch(candidates, current_debt) if s.passes_threshold]
+
+    def select_from_research(self, current_debt: Decimal) -> Optional[TaskCandidate]:
+        """Select the highest-certainty task from stored research data.
+
+        Queries the research score DB and returns the best task candidate
+        based on platform certainty and task affinity, filtered by the current
+        survival state's minimum certainty threshold.
+        """
+        from src.task_scorer import TaskCandidate, Platform as EarningPlatform, TaskType, PaymentMethod
+        
+        persistence = create_persistence_store()
+        research_scores = persistence.load_research_scores()
+        
+        if not research_scores:
+            return None
+        
+        # Get the minimum certainty threshold for current state
+        threshold = min_certainty(current_debt)
+        
+        # Score each research result and find the best platform/task combo
+        best_score = Decimal('0')
+        best_candidate = None
+        
+        for rs in research_scores:
+            # Use research platform certainties if available
+            research_certainties = rs.platform_certainties or {}
+            research_affinities = rs.task_affinities or {}
+            
+            # Consider each platform with its certainty
+            for platform_str, certainty in research_certainties.items():
+                try:
+                    platform = EarningPlatform(platform_str)
+                except ValueError:
+                    continue
+                
+                # Get base certainty from platform table
+                platform_data = PLATFORM_DATA.get(platform)
+                if platform_data:
+                    base_certainty = platform_data[0]  # base_certainty
+                else:
+                    base_certainty = Decimal('0.5')
+                
+                # Combine research certainty with base certainty
+                research_weight = Decimal('0.6')
+                platform_weight = Decimal('0.4')
+                combined = (certainty * research_weight + float(base_certainty) * platform_weight)
+                combined_decimal = Decimal(str(combined)).quantize(Decimal('0.01'))
+                
+                # Apply affinity bonus if task type matches
+                for task_type_str, affinity in research_affinities.items():
+                    try:
+                        task_type = TaskType(task_type_str)
+                    except ValueError:
+                        continue
+                    
+                    if task_type in PLATFORM_TASK_AFFINITY.get(platform, []):
+                        final = min(combined_decimal + Decimal(str(affinity)), Decimal('1.0'))
+                    else:
+                        final = combined_decimal
+                    
+                    # Apply survival state adjustment
+                    state = resolve_state(current_debt)
+                    survival_bonus = Decimal('0')
+                    if state == State.THRIVING:
+                        survival_bonus = Decimal('0.05')
+                    elif state == State.SURVIVING:
+                        survival_bonus = Decimal('0.02')
+                    
+                    total = min(final + survival_bonus, Decimal('1.0'))
+                    
+                    if total >= threshold and total > best_score:
+                        best_score = total
+                        # Create candidate
+                        best_candidate = TaskCandidate(
+                            platform=platform,
+                            task_type=task_type,
+                            title=f"Research: {rs.topic} - {rs.query[:50]}",
+                            estimated_pay=Decimal('1.00'),
+                            estimated_hours=Decimal('1.0'),
+                            payment_method=PaymentMethod.PAYONEER,
+                            platform_certainty=Decimal(str(certainty)),
+                            source_url='',
+                            metadata={'research_score': rs.topic, 'confidence': rs.confidence},
+                        )
+        
+        return best_candidate
 
 
 # Convenience function
