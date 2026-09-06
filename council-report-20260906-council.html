@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM Council Report: upaya-jivika</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; background: #fafafa; color: #333; }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1, h2, h3 { color: #2d3748; }
+    .header { border-bottom: 2px solid #e2e8f0; padding-bottom: 20px; margin-bottom: 20px; }
+    .question { background: #edf2f7; padding: 15px; border-radius: 4px; margin-bottom: 20px; font-family: monospace; font-size: 0.9em; }
+    .section { margin-bottom: 30px; }
+    .advisor { margin-bottom: 20px; padding: 15px; border-radius: 4px; }
+    .advisor.contrarian { background: #edf2f7; border-left: 4px solid #e53e3e; }
+    .advisor.first-principles { background: #edf2f7; border-left: 4px solid #dd6b20; }
+    .advisor.expansionist { background: #edf2f7; border-left: 4px solid #38a169; }
+    .advisor.outsider { background: #edf2f7; border-left: 4px solid #68d391; }
+    .advisor.executor { background: #edf2f7; border-left: 4px solid #f6e05e; }
+    .agreement, .clash, .blind-spot, .recommendation, .next-step { margin: 20px 0; padding: 15px; border-radius: 4px; }
+    .agreement { background: #c6f6d5; border: 1px solid #9ae6b4; }
+    .clash { background: #fed7d7; border: 1px solid #fc8181; }
+    .blind-spot { background: #faf089; border: 1px solid #f6e05e; }
+    .recommendation { background: #e2e8f0; border: 1px solid #a0aec0; }
+    .next-step { background: #ebf8ff; border: 1px solid #90cdf4; }
+    .peer-review { background: #fafafa; padding: 10px; margin: 10px 0; border-radius: 4px; font-size: 0.85em; }
+    .agreement-points, .clash-points, .blind-spot-points { margin: 10px 0; }
+    .footer { text-align: center; margin-top: 40px; color: #7f8c8d; font-size: 0.8em; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 20px 0; }
+    .grid div { background: #edf2f7; padding: 10px; border-radius: 4px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>LLM Council Report</h1>
+      <p>upaya-jivika v0.9 — Autonomous AI Agent Earning-Money Space</p>
+      <p><strong>Timestamp:</strong> 2026-09-06</p>
+    </div>
+
+    <div class="question">
+      <strong>Question:</strong> What does the upaya-jivika repo need to add or improve to stand above its competitors in the autonomous AI agent earning-money space?
+    </div>
+
+    <!-- WHERE THE COUNCIL AGREES -->
+    <div class="section agreement">
+      <h2>🟢 Where the Council Agrees</h2>
+      <div class="agreement-points">
+        <ul>
+          <li><strong>CAPTCHA solving is the critical path blocker.</strong> The agent cannot earn without reliable CAPTCHA solving on real earning platforms. The codebase admits "effectiveness untested against live protected targets."</li>
+          <li><strong>Research→execution loop must close before survival economics matter.</strong> The 6h research trigger is useless if findings don't feed into actual task selection and execution. Closed-loop learning is necessary but currently broken.</li>
+          <li><strong>Sequencing priority: fix earning automation first, then add survival framework.</strong> All 5 peer reviewers independently confirmed: (1) CAPTCHA solver integration, (2) close research→execution loop, (3) harden Payoneer webhooks, (4) layer on survival/reincarnation economics.</li>
+          <li><strong>The project needs better user-facing communication.</strong> The specialized terminology creates a barrier that masks the technical coherence beneath. The value proposition is opaque to newcomers.</li>
+          <li><strong>One working platform beats 20 broken ones.</strong> Nail one earning platform (Clickworker/Toloka with India Payoneer support) reliably before adding more integrations.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- WHERE THE COUNCIL CLASHES -->
+    <div class="section clash">
+      <h2>⚡ Where the Council Clashes</h2>
+      <div class="clash-points">
+        <h3>On the survival mechanic's importance:</h3>
+        <p><strong>Contrarian:</strong> The survival framework is ultimately meaningless if the agent can't earn. It's "clever but meaningless" without execution capability.</p>
+        <p><strong>Expansionist:</strong> The survival/reincarnation loop is the project's breakthrough differentiator. It creates "living AI pets with economic agency" where each reincarnation starts smarter — a new paradigm.</p>
+        <p><strong>First Principles:</strong> The question "should this project exist" is more important than "how do we fix it." The survival mechanic may divert focus from actually useful agent capabilities.</p>
+        <p><strong>Outsider:</strong> The survival mechanic feels like a gimmick without clear user benefit. "Why does it need a life/death cycle?" Differentiation without clear user benefit is just noise.</p>
+        <p><strong>Executor:</strong> The survival framework should be added after earning automation works, but warns against creating "a polished but hollow earning agent that has no soul." The survival mechanic risks being demoted to "add-on" status.</p>
+      </div>
+      <div class="clash-points">
+        <p><strong>Resolution:</strong> The survival mechanic is the project's unique value proposition but must not come at the expense of a working earning automation layer. Build earning capability first, then layer on the survival framework with proper learning carry-over.</p>
+      </div>
+    </div>
+
+    <!-- BLIND SPOTS -->
+    <div class="section blind-spot">
+      <h2>👁️ Blind Spots the Council Caught</h2>
+      <div class="blind-spot-points">
+        <ol>
+          <li><strong>Learning carry-over design is the single most important technical challenge.</strong> If every life starts from zero, survival mechanic has no teeth. If every life starts with god-mode knowledge, it's trivially easy. The design space between these extremes is where the project succeeds or fails.</li>
+          <li><strong>The "optional survival" workflow is an unaddressed design gap.</strong> The project could support both modes: users who want the survival experience and users who just want a working earning agent.</li>
+          <li><strong>CAPTCHA solving reliability varies by platform and geography.</strong> Different platforms have different CAPTCHA types (reCAPTCHA, Turnstile, DataDome, Kasada), different difficulty levels, and different geographies affect solver availability and cost.</li>
+          <li><strong>The research loop's "certainty" ratings need calibration against real earnings.</strong> The 70-75% certainty ratings lack evidence of derivation. They need feedback mechanisms that update based on actual earnings per task per platform.</li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- THE RECOMMENDATION -->
+    <div class="section recommendation">
+      <h2>💡 The Recommendation</h2>
+      <div style="background: #e2e8f0; padding: 15px; border-radius: 4px; border: 1px solid #a0aec0;">
+        <strong>Build the earning automation capability first, then layer on the survival framework as an opt-in mode.</strong><br><br>
+        <strong>Week 1 (MVP):</strong> Integrate 2Captcha with Clickworker automation, build closed research→execution→feedback pipeline, deploy test Payoneer webhook, add observable health endpoint.<br>
+        <strong>Week 2 (Survival On-Ramp):</strong> Add optional "survival mode" toggle, activate debt/reincarnation state machine, implement basic ancestral memory carry-over (top 3 platform certainties + task-type affinities per life), create GitHub diary structure.<br>
+        <strong>Week 3 (Compounding Intelligence):</strong> Expand ancestral memory to carry over certainties and affinities across reincarnations, add learning loop where outcomes from life N update certainties for life N+1, publish first soul crystal at death with 3 key lessons + 3 avoided strategies.<br><br>
+        <strong>Do not build:</strong> The full 20-platform integration, complex economic models, or public GitHub diaries until the single-platform earning pipeline works end-to-end with survival mode optional.
+      </div>
+    </div>
+
+    <!-- THE ONE THING TO DO FIRST -->
+    <div class="section next-step">
+      <h2>🎯 The One Thing to Do First</h2>
+      <div style="background: #ebf8ff; padding: 15px; border-radius: 4px; border: 1px solid #90cdf4;">
+        <strong>Integrate 2Captcha (or similar CAPTCHA solving service) with Clickworker automation and unit test on real forms.</strong><br>
+        Build the closed research→execution→feedback pipeline for ONE platform before adding more features or the survival framework.<br><br>
+        <em>This single action solves the #1 blocker identified by 4 of 5 advisors, provides tangible earnings to validate the entire project, and creates the foundation for everything else. Without a working earning pipeline, the survival mechanics are a gimmick on a dead agent. With it, the project has a future, and the survival framework can then be the differentiator that makes it stand above the sea of failed AI agent projects that never got past the CAPTCHA gate.</em>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>LLM Council Report — Generated 2026-09-06</p>
+      <p>Question: What does the upaya-jivika repo need to add or improve to stand above its competitors in the autonomous AI agent earning-money space?</p>
+      <p>Methodology: LLM Council (5 advisors → peer review → chairman synthesis)</p>
+    </div>
+  </div>
+</body>
+</html>

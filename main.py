@@ -51,10 +51,11 @@ from src.vault import get_vault
 from src.wallet import SpendRequest, Wallet, WalletError
 from src.withdrawal import WithdrawalError, WithdrawalPool, process_withdrawal
 
-# §7 platforms with a real connector wired in TaskExecutor.CONNECTORS. Only
-# these are ever passed to discover_tasks — a platform without a connector
-# would just raise ExecutionError on every attempt.
-EARNING_PLATFORMS = [EarningPlatform.CLICKWORKER, EarningPlatform.TOLOKA, EarningPlatform.PROLIFIC]
+# §7 Single-Platform MVP (issue #62): focus on ONE platform before expanding.
+# Starting with Clickworker (India-supported, 70% certainty per artifact.md §7).
+# ONLY after this works, add second platform per the executor rule: one working
+# platform beats 20 broken ones.
+EARNING_PLATFORMS = [EarningPlatform.CLICKWORKER]
 
 logger = logging.getLogger(__name__)
 
