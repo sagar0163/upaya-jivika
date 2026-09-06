@@ -24,12 +24,14 @@ os.environ.setdefault("FREE_LLM_API_KEY", "test-freellm-key")
 from src.task_scorer import (
     PaymentMethod,
     Platform,
+    TaskCandidate,
     TaskType,
 )
 
 # ============================================================================
 # Test task_scorer.py
 # ============================================================================
+
 
 class TestTaskScorerEnums:
     """Test task_scorer enums."""
@@ -69,6 +71,7 @@ class TestTaskCandidate:
 
     def test_task_candidate_defaults(self):
         from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
+
         candidate = TaskCandidate(
             platform=Platform.CLICKWORKER,
             task_type=TaskType.MICROTASK,
@@ -88,6 +91,7 @@ class TestTaskCandidate:
 
     def test_task_candidate_custom(self):
         from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
+
         candidate = TaskCandidate(
             platform=Platform.TOLOKA,
             task_type=TaskType.MICROTASK,
@@ -148,6 +152,7 @@ class TestPlatformData:
 
     def test_platform_data_exists(self):
         from src.task_scorer import PLATFORM_DATA, PaymentMethod, Platform
+
         assert Platform.TOLOKA in PLATFORM_DATA
         assert Platform.CLICKWORKER in PLATFORM_DATA
         assert Platform.PROLIFIC in PLATFORM_DATA
@@ -161,6 +166,7 @@ class TestPlatformData:
 
     def test_payment_reliability(self):
         from src.task_scorer import PAYMENT_RELIABILITY, PaymentMethod
+
         assert PAYMENT_RELIABILITY[PaymentMethod.PAYONEER] == Decimal("1.0")
         assert PAYMENT_RELIABILITY[PaymentMethod.PAYPAL] == Decimal("0.6")
         assert PAYMENT_RELIABILITY[PaymentMethod.CRYPTO] == Decimal("0.5")
@@ -172,6 +178,7 @@ class TestTaskScorer:
     @pytest.fixture
     def scorer(self):
         from src.task_scorer import TaskScorer
+
         return TaskScorer()
 
     def test_scorer_initialization(self, scorer):
@@ -180,6 +187,7 @@ class TestTaskScorer:
 
     def test_scorer_custom_thresholds(self):
         from src.task_scorer import TaskScorer
+
         scorer = TaskScorer(base_threshold=Decimal("0.75"), min_pay_per_hour=Decimal("5.00"))
         assert scorer.base_threshold == Decimal("0.75")
         assert scorer.min_pay_per_hour == Decimal("5.00")
@@ -444,6 +452,7 @@ class TestSelectFromResearch:
         from datetime import datetime, timezone
 
         from src.persistence import ResearchScore
+
         return ResearchScore(
             topic="earning_platforms",
             query="test query",
@@ -459,6 +468,7 @@ class TestSelectFromResearch:
     def _scorer_with(self, *scores):
         from src.persistence import InMemoryStore
         from src.task_scorer import TaskScorer
+
         store = InMemoryStore()
         for s in scores:
             store.save_research_score(s)
@@ -471,6 +481,7 @@ class TestSelectFromResearch:
 
     def test_picks_highest_certainty_platform(self):
         from src.task_scorer import Platform
+
         scorer, store = self._scorer_with(
             self._score({"toloka": 0.6}, {"survey": 0.05}),
             self._score({"clickworker": 0.95}, {"microtask": 0.05}),
@@ -486,6 +497,7 @@ class TestSelectFromResearch:
     def test_affinity_shifts_task_type_for_same_platform(self):
         """Same platform, two affinity signals — research-tagged task type wins."""
         from src.task_scorer import TaskType
+
         scorer, store = self._scorer_with(
             self._score({"clickworker": 0.95}, {"microtask": 0.05}),
             self._score({"clickworker": 0.95}, {"writing": 0.05}),
@@ -499,6 +511,7 @@ class TestSelectFromResearch:
         """A strong platform finding with no task keywords must still be
         selectable via the platform's default strengths (issue #60)."""
         from src.task_scorer import Platform
+
         scorer, store = self._scorer_with(
             self._score({"clickworker": 0.95}, {}),
         )
@@ -539,6 +552,7 @@ class TestSelectFromResearch:
 # Test task_executor.py
 # ============================================================================
 
+
 class TestTaskResult:
     """Test TaskResult model."""
 
@@ -573,6 +587,7 @@ class TestExecutionError:
 
     def test_execution_error(self):
         from src.task_executor import ExecutionError
+
         err = ExecutionError("Test error")
         assert str(err) == "Test error"
 
@@ -582,6 +597,7 @@ class TestPlatformConnector:
 
     def test_abstract_methods(self):
         from src.task_executor import PlatformConnector
+
         # Can't instantiate abstract class
         with pytest.raises(TypeError):
             PlatformConnector()
@@ -634,8 +650,10 @@ def _make_locator_aware_page(locators):
     ``locators`` maps a CSS selector to a FakeLocator. Unknown selectors fall
     back to a count-0 locator so code paths degrade gracefully.
     """
+
     def locator(selector):
         return locators.get(selector, FakeLocator(count=0))
+
     return locator
 
 
@@ -700,10 +718,13 @@ class TestClickworkerConnector:
         context, page = mock_context
         # Simulate one DOM with 2 task cards.
         cards = FakeLocator(count=2)
-        self._chain_page_locator(page, {
-            # Task card container
-            ClickworkerConnector.SEL_TASK_CARD: cards,
-        })
+        self._chain_page_locator(
+            page,
+            {
+                # Task card container
+                ClickworkerConnector.SEL_TASK_CARD: cards,
+            },
+        )
         # Each card resolves via nth -> first -> inner_text/get_attribute.
         page.locator.side_effect = lambda selector: FakeLocator(count=2)
 
@@ -721,49 +742,17 @@ class TestClickworkerConnector:
         from src.task_executor import ClickworkerConnector
 
         context, page = mock_context
-        self._chain_page_locator(page, {
-            ClickworkerConnector.SEL_TASK_CARD: FakeLocator(count=0),
-        })
+        self._chain_page_locator(
+            page,
+            {
+                ClickworkerConnector.SEL_TASK_CARD: FakeLocator(count=0),
+            },
+        )
 
         connector = ClickworkerConnector(Platform.CLICKWORKER, context)
         candidates = await connector.find_tasks()
 
         assert candidates == []
-
-    @pytest.mark.asyncio
-    async def test_execute_task_success(self, mock_context):
-        """Test successful task execution fills inputs and submits."""
-        from src.task_executor import ClickworkerConnector
-        from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
-
-        context, page = mock_context
-        self._chain_page_locator(page, {
-            "textarea[name], input[type='text'], input[type='number'], "
-            "textarea:not([hidden])": FakeLocator(count=1, texts=[""]),
-            "form button[type='submit']": FakeLocator(count=1),
-            "button[type='submit']": FakeLocator(count=1),
-            "[class*='success'], [class*='thank'], .alert-success, "
-            "[class*='completed']": FakeLocator(count=1),
-        })
-
-        connector = ClickworkerConnector(Platform.CLICKWORKER, context)
-        candidate = TaskCandidate(
-            platform=Platform.CLICKWORKER,
-            task_type=TaskType.MICROTASK,
-            title="Test task",
-            estimated_pay=Decimal("5.00"),
-            estimated_hours=Decimal("1.0"),
-            payment_method=PaymentMethod.PAYONEER,
-            source_url="https://clickworker.com/task/123",
-        )
-
-        result = await connector.execute_task(candidate)
-
-        assert result.success is True
-        assert result.amount_earned == Decimal("5.00")
-        assert result.error is None
-        assert result.candidate == candidate
-        assert result.platform_data["submitted"] is True
 
     @pytest.mark.asyncio
     async def test_execute_task_failure(self, mock_context):
@@ -799,15 +788,18 @@ class TestClickworkerConnector:
         from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         context, page = mock_context
-        self._chain_page_locator(page, {
-            # No inputs and no submit button and no success marker
-            "textarea[name], input[type='text'], input[type='number'], "
-            "textarea:not([hidden])": FakeLocator(count=0),
-            "form button[type='submit']": FakeLocator(count=0),
-            "button[type='submit']": FakeLocator(count=0),
-            "[class*='success'], [class*='thank'], .alert-success, "
-            "[class*='completed']": FakeLocator(count=0),
-        })
+        self._chain_page_locator(
+            page,
+            {
+                # No inputs and no submit button and no success marker
+                "textarea[name], input[type='text'], input[type='number'], textarea:not([hidden])": FakeLocator(
+                    count=0
+                ),
+                "form button[type='submit']": FakeLocator(count=0),
+                "button[type='submit']": FakeLocator(count=0),
+                "[class*='success'], [class*='thank'], .alert-success, [class*='completed']": FakeLocator(count=0),
+            },
+        )
 
         connector = ClickworkerConnector(Platform.CLICKWORKER, context)
         candidate = TaskCandidate(
@@ -839,6 +831,196 @@ class TestClickworkerConnector:
         earnings = await connector.get_earnings()
 
         assert earnings == Decimal("12.34")
+
+    # -- issue #62: Clickworker driven against *recorded real* HTML fixtures ---
+    #
+    # The fixture below present the connector with realistic job-listing and
+    # microtask-form markup parsed by lxml (see tests/form_fixture.py), so the
+    # discovery → fill → submit → confirm chain is tested on real platform forms
+    # rather than on generic mocked DOM shapes.
+
+    def _connector_from_html(self, html, screens=None):
+        """Build a ClickworkerConnector whose pages come from recorded HTML."""
+        from src.task_executor import ClickworkerConnector
+        from tests.form_fixture import build_page
+
+        context = MagicMock()
+        context.new_page = AsyncMock(return_value=build_page(html, screens=screens))
+        return ClickworkerConnector(Platform.CLICKWORKER, context)
+
+    @pytest.mark.asyncio
+    async def test_find_tasks_parses_recorded_jobs_html(self):
+        """Job-listing fixture -> one TaskCandidate per card, pay parsed."""
+        from tests.form_fixture import CLICKWORKER_JOBS_HTML, instant_pacing
+
+        connector = self._connector_from_html(CLICKWORKER_JOBS_HTML)
+        with instant_pacing():
+            candidates = await connector.find_tasks()
+
+        assert [c.title for c in candidates] == [
+            "Product Description Writing",
+            "Factuality Assessment",
+            "No reward shown",
+        ]
+        assert [c.estimated_pay for c in candidates] == [
+            Decimal("5.00"),
+            Decimal("7.50"),
+            Decimal("1.00"),
+        ]
+        assert [c.source_url for c in candidates] == [
+            "https://www.clickworker.com/jobs/1234",
+            "https://www.clickworker.com/jobs/9876",
+            "https://www.clickworker.com/jobs/5555",
+        ]
+        assert candidates[1].metadata.get("job_status") == "Open"
+        assert all(c.platform is Platform.CLICKWORKER for c in candidates)
+        assert all(c.payment_method is PaymentMethod.PAYONEER for c in candidates)
+
+    @pytest.mark.asyncio
+    async def test_parse_task_card_skips_titleless_card(self):
+        """A card with no title scrapes to None, not a broken Candidate."""
+
+        connector = self._connector_from_html(
+            """<html><body>
+            <article class="job-card">
+              <span class="reward-cell">Reward: $5.00</span>
+              <a href="/jobs/1">Open</a>
+            </article>
+            </body></html>"""
+        )
+        page = await connector.context.new_page()
+        assert await connector._parse_task_card(page, 0) is None
+
+    @pytest.mark.asyncio
+    async def test_execute_task_fills_real_form_and_confirms(self):
+        """The task-form fixture is fully filled, submitted and confirmed."""
+        from tests.form_fixture import (
+            CLICKWORKER_TASK_FORM_HTML,
+            CLICKWORKER_TASK_SUCCESS_HTML,
+            instant_pacing,
+        )
+
+        connector = self._connector_from_html(
+            CLICKWORKER_TASK_FORM_HTML,
+            screens={"success": CLICKWORKER_TASK_SUCCESS_HTML},
+        )
+        candidate = TaskCandidate(
+            platform=Platform.CLICKWORKER,
+            task_type=TaskType.MICROTASK,
+            title="Factuality Assessment",
+            estimated_pay=Decimal("5.00"),
+            estimated_hours=Decimal("1.0"),
+            payment_method=PaymentMethod.PAYONEER,
+            source_url="https://www.clickworker.com/jobs/9876",
+        )
+
+        with instant_pacing():
+            result = await connector.execute_task(candidate)
+
+        assert result.success is True
+        assert result.amount_earned == Decimal("5.00")
+        assert result.error is None
+        assert result.platform_data["submitted"] is True
+        assert result.platform_data["confirmed"] is True
+        kinds = {entry["kind"] for entry in result.platform_data["form_submission"]}
+        assert kinds == {"text", "textarea", "select", "radio", "checkbox", "rating"}
+        assert all(entry["value"] for entry in result.platform_data["form_submission"])
+
+    @pytest.mark.asyncio
+    async def test_execute_task_applies_explicit_answers(self):
+        """metadata['answers'] override the seeded answers per field."""
+        from tests.form_fixture import (
+            CLICKWORKER_TASK_FORM_HTML,
+            CLICKWORKER_TASK_SUCCESS_HTML,
+            instant_pacing,
+        )
+
+        connector = self._connector_from_html(
+            CLICKWORKER_TASK_FORM_HTML,
+            screens={"success": CLICKWORKER_TASK_SUCCESS_HTML},
+        )
+        candidate = TaskCandidate(
+            platform=Platform.CLICKWORKER,
+            task_type=TaskType.MICROTASK,
+            title="Factuality Assessment",
+            estimated_pay=Decimal("7.50"),
+            estimated_hours=Decimal("1.0"),
+            payment_method=PaymentMethod.PAYONEER,
+            source_url="https://www.clickworker.com/jobs/9876",
+            metadata={
+                "answers": {
+                    "summary": "The capital of France is Paris.",
+                    "factuality": "yes",
+                }
+            },
+        )
+
+        with instant_pacing():
+            result = await connector.execute_task(candidate)
+
+        report = result.platform_data["form_submission"]
+        by_name = {entry["name"]: entry for entry in report}
+        assert by_name["summary"]["value"] == "The capital of France is Paris."
+        assert by_name["factuality"]["value"] in {"yes"}
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_execute_task_clicks_apply_then_fills(self):
+        """A job-detail page swaps to the working form when Apply is clicked."""
+        from tests.form_fixture import (
+            CLICKWORKER_APPLY_PAGE_HTML,
+            CLICKWORKER_TASK_FORM_HTML,
+            CLICKWORKER_TASK_SUCCESS_HTML,
+            instant_pacing,
+        )
+
+        connector = self._connector_from_html(
+            CLICKWORKER_APPLY_PAGE_HTML,
+            screens={
+                "task-app-form": CLICKWORKER_TASK_FORM_HTML,
+                "success": CLICKWORKER_TASK_SUCCESS_HTML,
+            },
+        )
+        candidate = TaskCandidate(
+            platform=Platform.CLICKWORKER,
+            task_type=TaskType.MICROTASK,
+            title="Product Description Writing",
+            estimated_pay=Decimal("5.00"),
+            estimated_hours=Decimal("1.0"),
+            payment_method=PaymentMethod.PAYONEER,
+            source_url="https://www.clickworker.com/jobs/1234",
+        )
+
+        with instant_pacing():
+            result = await connector.execute_task(candidate)
+
+        assert result.success is True
+        assert result.amount_earned == Decimal("5.00")
+        assert result.platform_data["form_submission"]
+
+    @pytest.mark.asyncio
+    async def test_execute_task_unfilled_page_not_confirmed(self):
+        """An empty work page yields a clean failure, not an exception."""
+        from tests.form_fixture import CLICKWORKER_EMPTY_PAGE_HTML, instant_pacing
+
+        connector = self._connector_from_html(CLICKWORKER_EMPTY_PAGE_HTML)
+        candidate = TaskCandidate(
+            platform=Platform.CLICKWORKER,
+            task_type=TaskType.MICROTASK,
+            title="No active work",
+            estimated_pay=Decimal("1.00"),
+            estimated_hours=Decimal("1.0"),
+            payment_method=PaymentMethod.PAYONEER,
+            source_url="https://www.clickworker.com/jobs/none",
+        )
+
+        with instant_pacing():
+            result = await connector.execute_task(candidate)
+
+        assert result.success is False
+        assert result.amount_earned == Decimal("0")
+        assert "not confirmed" in (result.error or "")
+        assert result.platform_data["form_submission"] == []
 
 
 class TestTolokaConnector:
@@ -973,10 +1155,12 @@ class TestBrowserSessionManager:
         from src.task_executor import BrowserSessionManager
 
         mock_context = AsyncMock()
-        mock_context.cookies = AsyncMock(return_value=[
-            {"name": "session", "value": "abc", "domain": ".clickworker.com"},
-            {"name": "token", "value": "xyz", "domain": ".clickworker.com"},
-        ])
+        mock_context.cookies = AsyncMock(
+            return_value=[
+                {"name": "session", "value": "abc", "domain": ".clickworker.com"},
+                {"name": "token", "value": "xyz", "domain": ".clickworker.com"},
+            ]
+        )
 
         manager = BrowserSessionManager(headless=True, storage_dir=str(tmp_path))
         manager._contexts["clickworker_ctx"] = mock_context
@@ -1007,11 +1191,8 @@ class TestBrowserSessionManager:
         (artifact.md §13 session persistence across Render restarts)."""
         from src.task_executor import BrowserSessionManager
 
-        stored = [{"name": "session", "value": "saved-token",
-                   "domain": ".clickworker.com"}]
-        (tmp_path / "clickworker_ctx_cookies.json").write_text(
-            json.dumps(stored)
-        )
+        stored = [{"name": "session", "value": "saved-token", "domain": ".clickworker.com"}]
+        (tmp_path / "clickworker_ctx_cookies.json").write_text(json.dumps(stored))
 
         with patch("src.task_executor.async_playwright") as mock_playwright:
             mock_pw = AsyncMock()
@@ -1021,14 +1202,10 @@ class TestBrowserSessionManager:
             mock_pw.chromium.launch = AsyncMock(return_value=mock_browser)
             mock_browser.new_context = AsyncMock(return_value=mock_context)
 
-            manager = BrowserSessionManager(
-                headless=True, storage_dir=str(tmp_path)
-            )
+            manager = BrowserSessionManager(headless=True, storage_dir=str(tmp_path))
             await manager.start()
 
-            context = await manager.create_context(
-                "clickworker_ctx", persist=True
-            )
+            context = await manager.create_context("clickworker_ctx", persist=True)
 
             assert context == mock_context
             # Saved cookies were replayed into the new context
@@ -1044,17 +1221,13 @@ class TestBrowserSessionManager:
         from src.wallet import Wallet
 
         with patch("src.task_executor.BrowserSessionManager") as mock_manager_class:
-            mock_manager = AsyncMock(spec=(
-                "start", "stop", "create_context", "save_cookies"
-            ))
+            mock_manager = AsyncMock(spec=("start", "stop", "create_context", "save_cookies"))
             mock_manager.start = AsyncMock()
             mock_manager.stop = AsyncMock()
             mock_manager.save_cookies = AsyncMock(return_value=True)
             mock_manager_class.return_value = mock_manager
 
-            executor = TaskExecutor(
-                wallet=Wallet(), headless=True, session_dir=str(tmp_path)
-            )
+            executor = TaskExecutor(wallet=Wallet(), headless=True, session_dir=str(tmp_path))
             executor.session_manager = mock_manager
             executor._active_sessions = {"clickworker_ctx", "toloka_ctx"}
 
@@ -1074,11 +1247,13 @@ class TestTaskExecutor:
     def mock_wallet(self):
         """Create a mock wallet."""
         wallet = MagicMock()
-        wallet.credit_earned = MagicMock(return_value={
-            "debt_repaid": Decimal("0"),
-            "to_free": Decimal("10.00"),
-            "to_locked": Decimal("0"),
-        })
+        wallet.credit_earned = MagicMock(
+            return_value={
+                "debt_repaid": Decimal("0"),
+                "to_free": Decimal("10.00"),
+                "to_locked": Decimal("0"),
+            }
+        )
         wallet.free = Decimal("100.00")
         wallet.debt = Decimal("0")
         return wallet
@@ -1217,24 +1392,28 @@ class TestTaskExecutor:
         from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskType
 
         mock_connector1 = AsyncMock()
-        mock_connector1.find_tasks = AsyncMock(return_value=[
-            TaskCandidate(
-                platform=Platform.CLICKWORKER,
-                task_type=TaskType.MICROTASK,
-                title="Task 1",
-                payment_method=PaymentMethod.PAYONEER,
-            ),
-        ])
+        mock_connector1.find_tasks = AsyncMock(
+            return_value=[
+                TaskCandidate(
+                    platform=Platform.CLICKWORKER,
+                    task_type=TaskType.MICROTASK,
+                    title="Task 1",
+                    payment_method=PaymentMethod.PAYONEER,
+                ),
+            ]
+        )
 
         mock_connector2 = AsyncMock()
-        mock_connector2.find_tasks = AsyncMock(return_value=[
-            TaskCandidate(
-                platform=Platform.TOLOKA,
-                task_type=TaskType.MICROTASK,
-                title="Task 2",
-                payment_method=PaymentMethod.PAYONEER,
-            ),
-        ])
+        mock_connector2.find_tasks = AsyncMock(
+            return_value=[
+                TaskCandidate(
+                    platform=Platform.TOLOKA,
+                    task_type=TaskType.MICROTASK,
+                    title="Task 2",
+                    payment_method=PaymentMethod.PAYONEER,
+                ),
+            ]
+        )
 
         executor._connectors = {
             Platform.CLICKWORKER: mock_connector1,
@@ -1256,21 +1435,23 @@ class TestTaskExecutor:
         await executor.start()
 
         mock_connector = AsyncMock(spec=ClickworkerConnector)
-        mock_connector.execute_task = AsyncMock(return_value=TaskResult(
-            task_id="test123",
-            candidate=TaskCandidate(
-                platform=Platform.CLICKWORKER,
-                task_type=TaskType.MICROTASK,
-                title="Test",
-                estimated_pay=Decimal("10.00"),
-                estimated_hours=Decimal("1.0"),
-                payment_method=PaymentMethod.PAYONEER,
-            ),
-            success=True,
-            amount_earned=Decimal("10.00"),
-            time_spent_hours=Decimal("1.0"),
-            error=None,
-        ))
+        mock_connector.execute_task = AsyncMock(
+            return_value=TaskResult(
+                task_id="test123",
+                candidate=TaskCandidate(
+                    platform=Platform.CLICKWORKER,
+                    task_type=TaskType.MICROTASK,
+                    title="Test",
+                    estimated_pay=Decimal("10.00"),
+                    estimated_hours=Decimal("1.0"),
+                    payment_method=PaymentMethod.PAYONEER,
+                ),
+                success=True,
+                amount_earned=Decimal("10.00"),
+                time_spent_hours=Decimal("1.0"),
+                error=None,
+            )
+        )
 
         executor._connectors[Platform.CLICKWORKER] = mock_connector
 
@@ -1303,21 +1484,23 @@ class TestTaskExecutor:
         executor.scam_tracker = ScamTracker(InMemoryStore())
 
         mock_connector = AsyncMock(spec=ClickworkerConnector)
-        mock_connector.execute_task = AsyncMock(return_value=TaskResult(
-            task_id="test123",
-            candidate=TaskCandidate(
-                platform=Platform.CLICKWORKER,
-                task_type=TaskType.MICROTASK,
-                title="Test",
-                estimated_pay=Decimal("10.00"),
-                estimated_hours=Decimal("1.0"),
-                payment_method=PaymentMethod.PAYONEER,
-            ),
-            success=True,
-            amount_earned=Decimal("10.00"),
-            time_spent_hours=Decimal("1.0"),
-            error=None,
-        ))
+        mock_connector.execute_task = AsyncMock(
+            return_value=TaskResult(
+                task_id="test123",
+                candidate=TaskCandidate(
+                    platform=Platform.CLICKWORKER,
+                    task_type=TaskType.MICROTASK,
+                    title="Test",
+                    estimated_pay=Decimal("10.00"),
+                    estimated_hours=Decimal("1.0"),
+                    payment_method=PaymentMethod.PAYONEER,
+                ),
+                success=True,
+                amount_earned=Decimal("10.00"),
+                time_spent_hours=Decimal("1.0"),
+                error=None,
+            )
+        )
         executor._connectors[Platform.CLICKWORKER] = mock_connector
 
         candidate = TaskCandidate(
@@ -1342,21 +1525,23 @@ class TestTaskExecutor:
         from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskResult, TaskType
 
         mock_connector = AsyncMock(spec=ClickworkerConnector)
-        mock_connector.execute_task = AsyncMock(return_value=TaskResult(
-            task_id="test123",
-            candidate=TaskCandidate(
-                platform=Platform.CLICKWORKER,
-                task_type=TaskType.MICROTASK,
-                title="Test",
-                estimated_pay=Decimal("10.00"),
-                estimated_hours=Decimal("1.0"),
-                payment_method=PaymentMethod.PAYONEER,
-            ),
-            success=False,
-            amount_earned=Decimal("0"),
-            time_spent_hours=Decimal("0.5"),
-            error="Failed",
-        ))
+        mock_connector.execute_task = AsyncMock(
+            return_value=TaskResult(
+                task_id="test123",
+                candidate=TaskCandidate(
+                    platform=Platform.CLICKWORKER,
+                    task_type=TaskType.MICROTASK,
+                    title="Test",
+                    estimated_pay=Decimal("10.00"),
+                    estimated_hours=Decimal("1.0"),
+                    payment_method=PaymentMethod.PAYONEER,
+                ),
+                success=False,
+                amount_earned=Decimal("0"),
+                time_spent_hours=Decimal("0.5"),
+                error="Failed",
+            )
+        )
 
         executor._connectors[Platform.CLICKWORKER] = mock_connector
 
@@ -1431,36 +1616,38 @@ class TestTaskExecutor:
         from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskResult, TaskType
 
         mock_connector = AsyncMock()
-        mock_connector.execute_task = AsyncMock(side_effect=[
-            TaskResult(
-                task_id="1",
-                candidate=TaskCandidate(
-                    platform=Platform.CLICKWORKER,
-                    task_type=TaskType.MICROTASK,
-                    title="Task 1",
-                    estimated_pay=Decimal("10.00"),
-                    estimated_hours=Decimal("1.0"),
-                    payment_method=PaymentMethod.PAYONEER,
+        mock_connector.execute_task = AsyncMock(
+            side_effect=[
+                TaskResult(
+                    task_id="1",
+                    candidate=TaskCandidate(
+                        platform=Platform.CLICKWORKER,
+                        task_type=TaskType.MICROTASK,
+                        title="Task 1",
+                        estimated_pay=Decimal("10.00"),
+                        estimated_hours=Decimal("1.0"),
+                        payment_method=PaymentMethod.PAYONEER,
+                    ),
+                    success=True,
+                    amount_earned=Decimal("10.00"),
+                    time_spent_hours=Decimal("1.0"),
                 ),
-                success=True,
-                amount_earned=Decimal("10.00"),
-                time_spent_hours=Decimal("1.0"),
-            ),
-            TaskResult(
-                task_id="2",
-                candidate=TaskCandidate(
-                    platform=Platform.CLICKWORKER,
-                    task_type=TaskType.MICROTASK,
-                    title="Task 2",
-                    estimated_pay=Decimal("5.00"),
-                    estimated_hours=Decimal("0.5"),
-                    payment_method=PaymentMethod.PAYONEER,
+                TaskResult(
+                    task_id="2",
+                    candidate=TaskCandidate(
+                        platform=Platform.CLICKWORKER,
+                        task_type=TaskType.MICROTASK,
+                        title="Task 2",
+                        estimated_pay=Decimal("5.00"),
+                        estimated_hours=Decimal("0.5"),
+                        payment_method=PaymentMethod.PAYONEER,
+                    ),
+                    success=True,
+                    amount_earned=Decimal("5.00"),
+                    time_spent_hours=Decimal("0.5"),
                 ),
-                success=True,
-                amount_earned=Decimal("5.00"),
-                time_spent_hours=Decimal("0.5"),
-            ),
-        ])
+            ]
+        )
 
         executor._connectors[Platform.CLICKWORKER] = mock_connector
 
@@ -1541,6 +1728,7 @@ class TestMockExecuteTask:
 # ============================================================================
 # Integration tests
 # ============================================================================
+
 
 class TestTaskScorerExecutorIntegration:
     """Integration tests combining scorer and executor."""

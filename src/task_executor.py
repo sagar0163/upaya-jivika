@@ -41,6 +41,7 @@ from src.captcha_handler import (
     warm_cookies,
 )
 from src.guardrails import get_guardrail
+from src.microtask_forms import confirm_submission, fill_form, submit_form
 from src.scam_detection import PaymentWindow, PlatformScammedError, PlatformType, ScamTracker
 from src.state_machine import resolve_state
 from src.task_scorer import (
@@ -65,11 +66,13 @@ DEFAULT_TASK_TIMEOUT_SECONDS = 300
 
 class ExecutionError(Exception):
     """Raised when task execution fails."""
+
     pass
 
 
 class TaskTimeoutError(ExecutionError):
     """Raised when a task exceeds its maximum allowed duration."""
+
     pass
 
 
@@ -109,8 +112,11 @@ class PlatformConnector(ABC):
         if raw is None:
             return Decimal("0")
         text = raw.strip().replace("\u00a0", " ")
-        match = re.search(r"[-+]?\d[\d.,]*", text.replace(",", "")) if "," in text \
-            and "." not in text else re.search(r"[-+]?[\d.,]+", text)
+        match = (
+            re.search(r"[-+]?\d[\d.,]*", text.replace(",", ""))
+            if "," in text and "." not in text
+            else re.search(r"[-+]?[\d.,]+", text)
+        )
         if not match:
             return Decimal("0")
         cleaned = match.group(0).replace(",", "")
@@ -123,9 +129,9 @@ class PlatformConnector(ABC):
         """Create a new page in the context."""
         self.page = await self.context.new_page()
         # Human-like delays
-        await self.page.set_extra_http_headers({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        })
+        await self.page.set_extra_http_headers(
+            {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        )
         return self.page
 
     async def _wait_for_visible(self, selector: str, timeout: int = 5000) -> bool:
@@ -133,9 +139,7 @@ class PlatformConnector(ABC):
         if not self.page:
             return False
         try:
-            await self.page.wait_for_selector(
-                selector, timeout=timeout, state="visible"
-            )
+            await self.page.wait_for_selector(selector, timeout=timeout, state="visible")
             return True
         except Exception:
             return False
@@ -161,20 +165,14 @@ class PlatformConnector(ABC):
         for sel in markers:
             try:
                 if await self.page.locator(sel).count() > 0:
-                    logger.warning(
-                        f"Bot check detected on {self.platform.value} ({sel})"
-                    )
+                    logger.warning(f"Bot check detected on {self.platform.value} ({sel})")
                     return True
             except Exception:
                 continue
         # 2FA challenge form
         try:
-            if await self.page.locator(
-                "[name='otp'], [name='code'], input[inputmode='numeric']"
-            ).count() > 0:
-                logger.warning(
-                    f"2FA challenge detected on {self.platform.value}"
-                )
+            if await self.page.locator("[name='otp'], [name='code'], input[inputmode='numeric']").count() > 0:
+                logger.warning(f"2FA challenge detected on {self.platform.value}")
                 return True
         except Exception:
             pass
@@ -222,9 +220,7 @@ class PlatformConnector(ABC):
             try:
                 if await self.page.locator(marker).count() == 0:
                     continue
-                sitekey = await self.page.locator("[data-sitekey]").first.get_attribute(
-                    "data-sitekey"
-                )
+                sitekey = await self.page.locator("[data-sitekey]").first.get_attribute("data-sitekey")
                 if not sitekey:
                     continue
                 token = await solve(sitekey, self.page.url)
@@ -242,7 +238,8 @@ class PlatformConnector(ABC):
                 if injected:
                     logger.info(
                         "%s: solved %s via paid CAPTCHA solver (2Captcha/Anti-Captcha)",
-                        self.platform.value, marker,
+                        self.platform.value,
+                        marker,
                     )
                     return True
             except CaptchaSolveError as e:
@@ -334,10 +331,26 @@ class ClickworkerConnector(PlatformConnector):
     SEL_EMAIL = 'input[name="email"], input[type="email"]'
     SEL_PASSWORD = 'input[name="password"], input[type="password"]'
     SEL_SUBMIT = 'button[type="submit"], button[name="submit"]'
-    SEL_TASK_CARD = (
-        "article.task-card, li.task, tr.job-row, [class*='task-item'], "
-        "[class*='job-card']"
+    SEL_TASK_CARD = "article.task-card, li.task, li.job-item, tr.job-row, [class*='task-item'], [class*='job-card']"
+    # Job-card sub-fields (extracted per card via _parse_task_card).
+    SEL_TASK_TITLE = "h2, h3, .title, [class*='title']"
+    SEL_TASK_DESC = "p, .description, [class*='desc']"
+    SEL_TASK_REWARD = "[class*='pay'], .amount, [class*='price'], [class*='reward'], [class*='credit']"
+    SEL_TASK_LINK = "a[href]"
+    SEL_TASK_STATUS = "[class*='status']"
+
+    # A job detail page usually hides the working microtask form behind a
+    # start/apply action — click it before filling the form (issue #62 flow:
+    # discover job card → open detail → start work → fill → submit → confirm).
+    SEL_START = (
+        "button[name='apply'], button[class*='apply'], a[class*='apply'], "
+        "a[class*='start'], button[class*='start'], .btn-apply, .btn-start"
     )
+
+    # Confirmation markers recognised on/after submission (a thank-you page,
+    # success banner, or completed state). Clickworker returns these after it
+    # accepts a submission; the engine waits for one before crediting.
+    SEL_SUCCESS = "[class*='success'], [class*='thank'], .alert-success, [class*='completed']"
 
     async def login(self, credentials: dict) -> bool:
         page = await self._new_page()
@@ -370,6 +383,46 @@ class ClickworkerConnector(PlatformConnector):
         if await self._detect_bot_check():
             raise ExecutionError("Bot check on Clickworker jobs page")
 
+    async def _parse_task_card(self, page: Page, index: int) -> Optional[TaskCandidate]:
+        """Parse one Clickworker job card from the job-listing DOM.
+
+        Extracted into its own method so every discovered field is unit-testable
+        against recorded job-listing HTML (issue #62: "unit test every step on
+        real platform forms"). Returns None when the card carries no title.
+        """
+        card = page.locator(self.SEL_TASK_CARD).nth(index)
+        title = (await card.locator(self.SEL_TASK_TITLE).first.inner_text()).strip()
+        if not title:
+            return None
+
+        desc = (await card.locator(self.SEL_TASK_DESC).first.inner_text()).strip()
+        pay_raw = await card.locator(self.SEL_TASK_REWARD).first.inner_text()
+        status = (await card.locator(self.SEL_TASK_STATUS).first.inner_text()).strip()
+        href = await card.locator(self.SEL_TASK_LINK).first.get_attribute("href")
+
+        pay = self._to_decimal(pay_raw)
+        url = f"{self.BASE_URL}{href}" if href and href.startswith("/") else (href or self.BASE_URL)
+
+        metadata: dict[str, Any] = {
+            "scraped": True,
+            "source": "clickworker_jobs",
+        }
+        if status:
+            metadata["job_status"] = status
+
+        return TaskCandidate(
+            platform=Platform.CLICKWORKER,
+            task_type=TaskType.MICROTASK,
+            title=title,
+            description=desc,
+            estimated_pay=pay if pay > 0 else Decimal("1.00"),
+            estimated_hours=Decimal("1.0"),
+            payment_method=PaymentMethod.PAYONEER,
+            platform_certainty=Decimal("0.75"),
+            source_url=url,
+            metadata=metadata,
+        )
+
     async def find_tasks(self) -> list[TaskCandidate]:
         """Scrape available Clickworker tasks from the job listing DOM."""
         page = await self._new_page()
@@ -388,40 +441,9 @@ class ClickworkerConnector(PlatformConnector):
 
             for i in range(count):
                 try:
-                    card = page.locator(self.SEL_TASK_CARD).nth(i)
-                    title = (await card.locator(
-                        "h2, h3, .title, [class*='title']"
-                    ).first.inner_text()).strip()
-                    desc = (await card.locator(
-                        "p, .description, [class*='desc']"
-                    ).first.inner_text()).strip()
-                    pay_raw = await card.locator(
-                        "[class*='pay'], .amount, [class*='price']"
-                    ).first.inner_text()
-                    href = await card.locator(
-                        "a[href]"
-                    ).first.get_attribute("href")
-
-                    pay = self._to_decimal(pay_raw)
-                    url = f"{self.BASE_URL}{href}" if href and href.startswith(
-                        "/") else (href or self.BASE_URL)
-
-                    if not title:
-                        continue
-                    candidates.append(
-                        TaskCandidate(
-                            platform=Platform.CLICKWORKER,
-                            task_type=TaskType.MICROTASK,
-                            title=title,
-                            description=desc,
-                            estimated_pay=pay if pay > 0 else Decimal("1.00"),
-                            estimated_hours=Decimal("1.0"),
-                            payment_method=PaymentMethod.PAYONEER,
-                            platform_certainty=Decimal("0.75"),
-                            source_url=url,
-                            metadata={"scraped": True, "source": "clickworker_jobs"},
-                        )
-                    )
+                    candidate = await self._parse_task_card(page, i)
+                    if candidate:
+                        candidates.append(candidate)
                 except Exception as e:
                     logger.debug(f"Clickworker card {i} skipped: {e}")
                     continue
@@ -437,6 +459,7 @@ class ClickworkerConnector(PlatformConnector):
         amount_earned = Decimal("0")
         error: Optional[str] = None
         submitted = False
+        fill_report: list[dict[str, str]] = []
 
         try:
             await page.goto(candidate.source_url, wait_until="domcontentloaded")
@@ -444,44 +467,41 @@ class ClickworkerConnector(PlatformConnector):
             if await self._detect_bot_check():
                 raise ExecutionError("Bot check on Clickworker task page")
 
-            # Human-paced interaction: fill any text inputs we can find, then
-            # submit the task form if present.
-            inputs = await page.locator(
-                "textarea[name], input[type='text'], input[type='number'], "
-                "textarea:not([hidden])"
-            ).count()
-            if inputs > 0:
-                # Answer deterministically from research output stored on the
-                # candidate; a no-free-text config just acknowledges the task.
-                answer = candidate.metadata.get("answer_text", "Completed.")
-                for idx in range(inputs):
-                    el = page.locator(
-                        "textarea[name], input[type='text'], input[type='number'], "
-                        "textarea:not([hidden])"
-                    ).nth(idx)
-                    try:
-                        await el.fill(answer)
-                    except Exception:
-                        continue
-                await asyncio.sleep(0.5)
+            # A job-detail page hides the working form behind a start/apply
+            # action (issue #62 flow). Click it when present, then wait for
+            # the actual microtask form to settle before filling it.
+            if await self._locate_count(self.SEL_START) > 0:
+                if not await self._safe_click(self.SEL_START):
+                    raise ExecutionError("Could not open Clickworker task form")
+                await asyncio.sleep(1.0)
 
-            if await self._locate_count("form button[type='submit']") > 0 or \
-               await self._locate_count("button[type='submit']") > 0:
-                await self._safe_click("button[type='submit']")
-                submitted = True
-                await asyncio.sleep(1.5)
+            # Deterministic form filling: same task title always produces the
+            # same answers (stable across runs, auditable via fill_report).
+            # Explicit answers from the candidate's metadata win — apply by
+            # field name, or "*" to set every free-text field.
+            seed = candidate.title or task_id
+            explicit = dict(candidate.metadata.get("answers", {}) or {})
+            if candidate.metadata.get("answer_text"):
+                explicit["*"] = candidate.metadata["answer_text"]
+            fill_report = await fill_form(page, seed=seed, explicit=explicit)
 
-            # Consider the task successful when the page accepts our input
-            # (e.g. a success/confirmation marker or not still showing the form).
-            success_marker = await self._locate_count(
-                "[class*='success'], [class*='thank'], .alert-success, "
-                "[class*='completed']"
-            ) > 0
-            success = (submitted and success_marker) or (not submitted and inputs > 0)
-            if success:
-                amount_earned = candidate.estimated_pay
+            submitted = await submit_form(page)
+            await asyncio.sleep(1.5)
+            confirmed = await confirm_submission(page, self.SEL_SUCCESS)
+
+            # A submission is a success when the platform shows a
+            # confirmation marker after the submit click. Rating-only /
+            # JS-submit forms present no submit button — a filled form with
+            # no submit control is counted too (legacy fallback).
+            if submitted and confirmed:
+                success = True
+            elif not submitted and fill_report:
+                success = True
             else:
                 error = "Task not confirmed as completed"
+
+            if success:
+                amount_earned = candidate.estimated_pay
         except Exception as e:
             error = str(e)
             logger.error(f"Clickworker task execution failed: {e}")
@@ -498,6 +518,8 @@ class ClickworkerConnector(PlatformConnector):
             platform_data={
                 "platform": self.platform.value,
                 "submitted": submitted,
+                "confirmed": success,
+                "form_submission": fill_report,
                 "session_persisted": candidate.metadata.get("session_persisted", False),
             },
         )
@@ -508,9 +530,7 @@ class ClickworkerConnector(PlatformConnector):
         try:
             await page.goto(self.DASHBOARD_URL, wait_until="domcontentloaded")
             await asyncio.sleep(1.0)
-            raw = await self._read_text(
-                "[class*='balance'], [class*='earnings'], .amount"
-            )
+            raw = await self._read_text("[class*='balance'], [class*='earnings'], .amount")
             if raw:
                 return self._to_decimal(raw)
         except Exception as e:
@@ -809,7 +829,8 @@ class BrowserSessionManager:
             raise ExecutionError("Browser not started. Call start() first.")
 
         context = await self._browser.new_context(
-            user_agent=user_agent or (
+            user_agent=user_agent
+            or (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
@@ -901,9 +922,7 @@ class TaskExecutor:
         # §20: a platform that already confirmed-scammed this agent is never
         # rejoined — checked before spending a login attempt on it.
         self.scam_tracker = scam_tracker
-        self.session_manager = BrowserSessionManager(
-            headless=headless, storage_dir=session_dir
-        )
+        self.session_manager = BrowserSessionManager(headless=headless, storage_dir=session_dir)
         self._connectors: dict[Platform, PlatformConnector] = {}
         self._credentials: dict[Platform, dict] = {}
         self._active_sessions: set[str] = set()
@@ -950,14 +969,10 @@ class TaskExecutor:
             return self._connectors[platform]
 
         if self.bot_tracker is not None and self.bot_tracker.is_blocked(platform.value):
-            raise PlatformBlockError(
-                f"{platform.value} is permanently blocked (exhausted §19 stealth ladder)"
-            )
+            raise PlatformBlockError(f"{platform.value} is permanently blocked (exhausted §19 stealth ladder)")
 
         if self.scam_tracker is not None and self.scam_tracker.is_platform_scammed(platform.value):
-            raise PlatformScammedError(
-                f"{platform.value} confirmed-scammed this agent (§20) — never rejoined"
-            )
+            raise PlatformScammedError(f"{platform.value} confirmed-scammed this agent (§20) — never rejoined")
 
         if platform not in CONNECTORS:
             raise ExecutionError(f"No connector for platform: {platform}")
@@ -1011,9 +1026,7 @@ class TaskExecutor:
         self._active_sessions.add(ctx_name)
         return connector
 
-    async def _warm_context_for_vendor(
-        self, platform: Platform, login_url: str, context: BrowserContext
-    ) -> None:
+    async def _warm_context_for_vendor(self, platform: Platform, login_url: str, context: BrowserContext) -> None:
         """Probe ``login_url`` for a known anti-bot vendor and, if the §19
         ladder's next recommended tool is a cookie warmer (nodriver/Camoufox),
         pre-load ``context`` with cookies from a session that already cleared
@@ -1035,12 +1048,16 @@ class TaskExecutor:
                 await context.add_cookies(cast(Any, cookies))
                 logger.info(
                     "%s: warmed %d cookie(s) via %s for vendor=%s",
-                    platform.value, len(cookies), tool.value, vendor.value,
+                    platform.value,
+                    len(cookies),
+                    tool.value,
+                    vendor.value,
                 )
         except Exception:
             logger.exception(
                 "%s: cookie warming via %s failed — proceeding without it",
-                platform.value, tool.value,
+                platform.value,
+                tool.value,
             )
 
     async def discover_tasks(self, platforms: list[Platform]) -> list[TaskCandidate]:
@@ -1108,8 +1125,7 @@ class TaskExecutor:
             )
         except asyncio.TimeoutError:
             logger.warning(
-                f"Task {candidate.title!r} exceeded {self.task_timeout_seconds}s cap; "
-                "aborting and reporting failure"
+                f"Task {candidate.title!r} exceeded {self.task_timeout_seconds}s cap; aborting and reporting failure"
             )
             result = TaskResult(
                 task_id=str(uuid.uuid4())[:8],
@@ -1132,9 +1148,7 @@ class TaskExecutor:
                     f"to_free=${breakdown['to_free']}, "
                     f"to_locked=${breakdown['to_locked']}"
                 )
-                result.platform_data["wallet_breakdown"] = {
-                    k: str(v) for k, v in breakdown.items()
-                }
+                result.platform_data["wallet_breakdown"] = {k: str(v) for k, v in breakdown.items()}
             except Exception as e:
                 logger.error(f"Wallet credit failed: {e}")
                 result.platform_data["wallet_error"] = str(e)
@@ -1209,8 +1223,7 @@ class TaskExecutor:
         research_candidate = scorer.select_from_research(current_debt)
         if research_candidate:
             logger.info(
-                f"Selected task from research: {research_candidate.title} "
-                f"on {research_candidate.platform.value}"
+                f"Selected task from research: {research_candidate.title} on {research_candidate.platform.value}"
             )
             # Discover real tasks on this platform
             platform_candidates = await self.discover_tasks([research_candidate.platform])
@@ -1243,9 +1256,7 @@ class TaskExecutor:
                         sources=["execution_loop"],
                         timestamp=datetime.now(timezone.utc),
                         platform_certainties={best_real_candidate.platform.value: new_certainty},
-                        task_affinities={
-                            best_real_candidate.task_type.value: 0.1 if research_result.success else -0.1
-                        },
+                        task_affinities={best_real_candidate.task_type.value: 0.1 if research_result.success else -0.1},
                     )
                     store.save_research_score(feedback_score)
                     logger.info("Feedback loop: Outcome saved to research data")
@@ -1272,14 +1283,12 @@ class TaskExecutor:
 
         batch_results = await self.execute_batch(executable, certainty=min_certainty)
         results.extend(batch_results)
-        
+
         return results
 
 
 # Convenience function for testing with mocked browser
-async def mock_execute_task(
-    candidate: TaskCandidate, success: bool = True
-) -> TaskResult:
+async def mock_execute_task(candidate: TaskCandidate, success: bool = True) -> TaskResult:
     """Deterministic mock execution for testing without a real browser.
 
     A mock must be deterministic — the previous implementation used an 80%
