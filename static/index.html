@@ -553,24 +553,36 @@
   <div class="rebirth-flash" id="rebirthFlash"></div>
 
   <script>
-    // ---- API auth (write endpoints require a bearer token — see src/api_auth.py) ----
-    function getApiToken() {
-      let token = localStorage.getItem('uj_api_token');
-      if (!token) {
-        token = window.prompt('Enter the dashboard API token (set as API_AUTH_TOKEN on the server):');
-        if (token) localStorage.setItem('uj_api_token', token);
-      }
-      return token;
+    // ---- API auth (write endpoints require a token — see src/api_auth.py) ----
+    // The token itself is never held in page JS/localStorage: on first use
+    // it's exchanged once for an httpOnly session cookie (POST /api/session),
+    // which the browser attaches automatically and page script can't read —
+    // so a future XSS on this page can't steal it via storage access.
+    let sessionEstablished = false;
+
+    async function establishSession() {
+      const token = window.prompt('Enter the dashboard API token (set as API_AUTH_TOKEN on the server):');
+      if (!token) return false;
+      const resp = await fetch('/api/session', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      });
+      sessionEstablished = resp.ok;
+      return resp.ok;
     }
 
     async function authedFetch(url, options = {}) {
-      const token = getApiToken();
-      const headers = Object.assign({}, options.headers, {
-        Authorization: 'Bearer ' + (token || ''),
-      });
-      const resp = await fetch(url, Object.assign({}, options, { headers }));
+      if (!sessionEstablished) {
+        await establishSession();
+      }
+      let resp = await fetch(url, Object.assign({}, options, { credentials: 'include' }));
       if (resp.status === 401 || resp.status === 403) {
-        localStorage.removeItem('uj_api_token');
+        sessionEstablished = false;
+        if (await establishSession()) {
+          resp = await fetch(url, Object.assign({}, options, { credentials: 'include' }));
+        }
       }
       return resp;
     }
@@ -974,7 +986,7 @@
             <span class="pending-spend-amount">$${p.amount}</span>
             <button class="pending-spend-reject" data-id="${p.spend_id}">Veto</button>
           </div>
-          <div class="pending-spend-reason">${p.reason}</div>
+          <div class="pending-spend-reason">${escapeHtml(p.reason)}</div>
           <div class="pending-spend-deadline">${fmtDeadline(p.veto_deadline)}</div>
         `;
         pendingSpendList.appendChild(item);

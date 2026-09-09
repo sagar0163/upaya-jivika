@@ -10,6 +10,7 @@ The ``/health`` endpoint is always available.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -26,12 +27,12 @@ from pathlib import Path
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from src.alert_system import AlertLevel, AlertSystem
 from src.ancestral_memory import AncestralMemory, load_ancestral_memory
-from src.api_auth import require_api_token
+from src.api_auth import SESSION_COOKIE, require_api_token
 from src.approval_gate import ApprovalGate, SpendDecision
 from src.audit_trail import AuditTrail
 from src.captcha_handler import BotDetectionTracker
@@ -1143,6 +1144,64 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 # ---------------------------------------------------------------------------
+# Dashboard session (httpOnly cookie so the token never sits in page-readable
+# storage — see src/api_auth.py's SESSION_COOKIE docstring)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/session")
+async def create_session(request: Request, response: Response):
+    """Exchange the API token for an httpOnly session cookie.
+
+    The dashboard calls this once (after prompting the user for the token)
+    instead of holding the token itself in JS-readable storage. The cookie
+    is what every other mutating endpoint accepts via ``require_api_token``.
+    """
+    token = os.environ.get("API_AUTH_TOKEN")
+    if not token:
+        raise HTTPException(status_code=503, detail="API authentication not configured")
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Malformed JSON body") from exc
+
+    presented = payload.get("token", "")
+    if not hmac.compare_digest(presented, token):
+        raise HTTPException(status_code=403, detail="Invalid API token")
+
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=token,
+        httponly=True,
+        secure=_is_https_request(request),
+        samesite="strict",
+        path="/",
+    )
+    return {"ok": True}
+
+
+def _is_https_request(request: Request) -> bool:
+    """True if the client connected over HTTPS.
+
+    Render (and most PaaS setups) terminate TLS at the edge and forward
+    plain HTTP to the app, so ``request.url.scheme`` reads "http" even in
+    production unless uvicorn is told to trust proxy headers (it isn't
+    here) — fall back to the ``X-Forwarded-Proto`` header the edge sets.
+    """
+    if request.url.scheme == "https":
+        return True
+    return request.headers.get("x-forwarded-proto", "").lower() == "https"
+
+
+@app.post("/api/session/logout")
+async def logout_session(response: Response):
+    """Clear the dashboard's session cookie."""
+    response.delete_cookie(key=SESSION_COOKIE, path="/")
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # API endpoints for GitHub Actions cron jobs
 # ---------------------------------------------------------------------------
 
@@ -1292,7 +1351,8 @@ async def email_scan_endpoint():
     loop = _loop
     if loop is None:
         raise HTTPException(status_code=503, detail="Survival loop not initialised")
-    return {"alerts_found": loop.scan_email_for_payment_alerts()}
+    alerts = await asyncio.to_thread(loop.scan_email_for_payment_alerts)
+    return {"alerts_found": alerts}
 
 
 @app.get("/api/spend/pending")
@@ -1340,7 +1400,7 @@ async def withdraw_endpoint(request: Request):
         raise HTTPException(status_code=400, detail=f"Invalid withdrawal request: {exc}") from exc
 
     try:
-        return loop.process_withdrawal(pool, amount)
+        return await asyncio.to_thread(loop.process_withdrawal, pool, amount)
     except (WithdrawalError, WalletError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

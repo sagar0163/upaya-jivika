@@ -175,7 +175,7 @@ class PlatformConnector(ABC):
                 logger.warning(f"2FA challenge detected on {self.platform.value}")
                 return True
         except Exception:
-            pass
+            logger.debug("2FA challenge locator check failed on %s", self.platform.value, exc_info=True)
         return False
 
     async def _attempt_captcha_solve(self) -> bool:

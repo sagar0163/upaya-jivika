@@ -9,11 +9,14 @@ Rules from artifact.md §11:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class SoulCrystal(BaseModel):
@@ -194,7 +197,13 @@ def generate_soul_crystal(
             research_scores = store.load_research_scores()
             top_platforms, top_tasks = aggregate_top3(research_scores)
         except Exception:
-            pass
+            logger.warning(
+                "Failed to load research scores for soul crystal carry-over "
+                "(life %d) — ancestral memory will have no platform/task "
+                "certainties this reincarnation",
+                record.life_number,
+                exc_info=True,
+            )
     else:
         top_platforms, top_tasks = aggregate_top3(research_scores)
 

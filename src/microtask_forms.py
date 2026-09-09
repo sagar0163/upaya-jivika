@@ -348,7 +348,7 @@ async def detect_controls(page: Any) -> list[FormControl]:
             ).first.inner_text()
             title = title_block.strip()
         except Exception:
-            pass
+            logger.debug("No title/label element found for rating control %d", i, exc_info=True)
         _maybe_add(
             FormControl(
                 kind=FieldKind.RATING,

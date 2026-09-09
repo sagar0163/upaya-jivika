@@ -55,3 +55,27 @@ class TestRequireApiToken:
 
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
+
+    def test_correct_session_cookie_accepted(self, app):
+        client = TestClient(app)
+        client.cookies.set("uj_session", "test-token")
+
+        resp = client.post("/protected")
+
+        assert resp.status_code == 200
+
+    def test_wrong_session_cookie_rejected(self, app):
+        client = TestClient(app)
+        client.cookies.set("uj_session", "wrong")
+
+        resp = client.post("/protected")
+
+        assert resp.status_code == 403
+
+    def test_header_takes_precedence_over_cookie(self, app):
+        client = TestClient(app)
+        client.cookies.set("uj_session", "wrong")
+
+        resp = client.post("/protected", headers={"Authorization": "Bearer test-token"})
+
+        assert resp.status_code == 200

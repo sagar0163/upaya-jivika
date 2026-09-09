@@ -89,7 +89,7 @@ class EmailInboxClient:
             try:
                 conn.logout()
             except Exception:
-                pass
+                logger.debug("IMAP logout failed (connection likely already closed)", exc_info=True)
 
     def fetch_unread(self, folder: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
         if not self.is_configured and self._imap_client is None:
@@ -199,7 +199,8 @@ async def wait_for_verification_email(
     """Poll the inbox until a matching verification email arrives or timeout."""
     deadline = time.monotonic() + timeout_seconds
     while True:
-        for msg in client.fetch_unread():
+        messages = await asyncio.to_thread(client.fetch_unread)
+        for msg in messages:
             if is_platform_verification_email(msg, platform_hint):
                 return msg
         if time.monotonic() >= deadline:
