@@ -1,5 +1,5 @@
 # Survival AI — Project Spec
-> Version 0.9 · Last updated 2026-09-05  
+> Version 0.9 · Last updated 2026-09-07  
 > Single source of truth. Update this file, not chat.
 
 ---
@@ -54,6 +54,14 @@ The agent:
 - Pays the user rent (locked pool) just to keep existing
 - Researches its own earning strategies autonomously
 - Remembers every past life and gets smarter with each reincarnation
+
+### Scope boundary: what "autonomous" does and doesn't cover
+
+The agent is autonomous over **research → task discovery → task execution → earning → survival → reincarnation** on platforms it already has an account on. It does **not** create its own accounts on new platforms. There is no `signup()`/`register()` path anywhere in the codebase — every `PlatformConnector` implements `login()` only.
+
+This is a deliberate boundary, not a missing feature to build later. Real gig-work platforms gate signup behind information only a human can lawfully supply: legal name and tax ID for Payoneer/tax forms (W-8BEN, PAN/SSN), a real bank/payment account to link, phone/SMS verification, and often manual identity vetting (ID upload, liveness checks). Having the agent hold and submit a human's tax ID and bank details itself would be its own serious risk, separate from the engineering effort.
+
+The practical model: **a human creates the account once per platform** and loads its credentials into the vault (`src/vault.py`, encrypted at rest). From that point on, the agent runs the entire earn/survive/reincarnate loop against that platform with no further help — including deciding how to allocate effort across whichever platforms it's been given, and surfacing (via research output/alerts) which new platforms look worth onboarding next if the user wants to provision one.
 
 ---
 
@@ -461,7 +469,7 @@ dashboard.py         — Rich terminal UI, live status
 |---|---|---|
 | ✅ | Payment confirmation | **SOLVED** — `POST /api/webhooks/payoneer` in `main.py` (`src/payoneer_webhook.py`) verifies an HMAC-SHA256 signature, credits the wallet idempotently by `payment_id`, repays debt first. Payload field names are defensive/best-effort since Payoneer's exact webhook schema isn't public — narrow once real payloads are observed. |
 | ✅ | CI pipeline | **SOLVED** — `ci.yml` now runs `ruff` + `pytest` (was a Node no-op); flaky WS test fixed |
-| 🟡 | Email inbox | `src/email_inbox.py` built — IMAP client (soft-configured via `EMAIL_IMAP_*` env vars), verification link/code extraction, payment-alert detection; payment-alert scanning is live (runs every 15 min, wired into the event feed/cold archive). **Not wired**: no connector calls `wait_for_verification_email` during signup — most real platforms require email verification to create an account at all, so this blocks autonomous onboarding to new platforms until closed |
+| 🟡 | Email inbox | `src/email_inbox.py` built — IMAP client (soft-configured via `EMAIL_IMAP_*` env vars), verification link/code extraction, payment-alert detection; payment-alert scanning is live (runs every 15 min, wired into the event feed/cold archive). **Not wired to a signup flow, by design**: no connector calls `wait_for_verification_email` because there is no signup flow at all — see [§1 Scope boundary](#1-concept). Account creation requires a human to supply tax ID/bank/phone identity that the agent should not hold, so this isn't a gap to close so much as the edge of the agent's autonomy: a human provisions the account, the agent takes it from login onward |
 | 🟡 | CAPTCHA handling | §19 detection/escalation/blocklist + playwright-stealth + `nodriver`/`Camoufox` cookie-warming + 2Captcha paid solving with Anti-Captcha fallback (reCAPTCHA/hCaptcha/Cloudflare Turnstile) are all built and wired into `TaskExecutor`/`BrowserSessionManager`/`PlatformConnector`. Deliberate scope choice per explicit user decision (2026-09-04): implements full bypass/evasion, accepting the ToS-violation risk on platforms with bot protection. Remaining gaps: Kasada has no ladder entry at all (still blocklist-and-abandon), and real-world bypass effectiveness against live Cloudflare/DataDome/Akamai is unverified — this environment has no live protected target to test against |
 | ✅ | Withdrawal mechanism | **SOLVED** — Dashboard UI + `POST /api/withdraw` (`src/withdrawal.py`) debits the chosen pool and requests a Payoneer payout, queuing for manual processing until `PAYONEER_API_KEY`/`PAYONEER_PROGRAM_ID` are configured (same soft-dependency pattern as the Payoneer webhook) |
 | 🟡 | Ethical guardrail | **SOLVED** — `src/guardrails.py` hard blacklist (spam/fake review/plagiarism/ToS violation/illegal) enforced in `task_scorer` + `task_executor` even in Terminal state |
