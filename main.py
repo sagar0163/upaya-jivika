@@ -955,6 +955,54 @@ class SurvivalLoop:
 
     # -- lifecycle ----------------------------------------------------------
 
+    def _schedule_coroutine(
+        self, coro: Any, label: str
+    ) -> asyncio.Future | None:
+        """Safely run an async job from APScheduler's worker thread.
+
+        ``coro`` is handed to the event loop that was live when the app
+        started (captured in ``__init__`` via ``get_running_loop``) through
+        ``run_coroutine_threadsafe`` — the only safe cross-thread mechanism,
+        since it submits to a *running* loop that uvicorn is actually
+        driving. If no live loop is available this fails loudly: a silent
+        no-op here would mean the earning cycle (the revenue path) never
+        fires in production and nobody notices (issue #70).
+        """
+        loop = self._event_loop
+        if loop is None:
+            logger.error(
+                "%s could not be scheduled — no event loop captured at "
+                "startup (was SurvivalLoop constructed outside a running app?)",
+                label,
+            )
+            return None
+        if not loop.is_running():
+            logger.error(
+                "%s could not be scheduled — captured event loop is not running",
+                label,
+            )
+            return None
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+
+        def _log_result(fut: asyncio.Future) -> None:
+            if fut.cancelled():
+                logger.warning("%s was cancelled before it ran", label)
+                return
+            exc = fut.exception()
+            if exc is not None:
+                logger.error("%s completed with an exception: %s", label, exc)
+
+        future.add_done_callback(_log_result)
+        return future
+
+    def _trigger_research(self) -> None:
+        """APScheduler job body — schedules the async research cycle."""
+        self._schedule_coroutine(self.research_trigger(), "Research trigger")
+
+    def _trigger_earning_cycle(self) -> None:
+        """APScheduler job body — schedules the async earning cycle."""
+        self._schedule_coroutine(self.earning_cycle(), "Earning cycle")
+
     def start(self) -> None:
         """Start the survival loop with APScheduler."""
         if self._running:
@@ -969,31 +1017,21 @@ class SurvivalLoop:
             self.survival_tick, "interval", minutes=1, id="survival_tick"
         )
 
-        # Research trigger every 6 h — run async via the event loop
-        def _trigger_research() -> None:
-            try:
-                loop = asyncio.get_event_loop()
-                asyncio.run_coroutine_threadsafe(
-                    self.research_trigger(), loop
-                )
-            except RuntimeError:
-                logger.warning("No running event loop for research trigger")
-
+        # Research trigger every 6 h — run async via the event loop captured at
+        # startup (uvicorn's live loop). BackgroundScheduler runs these jobs on
+        # worker threads, where asyncio.get_event_loop() is unusable: Python
+        # 3.11+ raises RuntimeError in non-main threads with no set loop, and
+        # even a loop it did return is never run by anyone (issue #70). We hand
+        # the coroutine to the real loop via run_coroutine_threadsafe instead.
         self._scheduler.add_job(
-            _trigger_research, "interval", hours=6, id="research_trigger"
+            self._trigger_research, "interval", hours=6, id="research_trigger"
         )
 
-        # Earning cycle every 2 h — run async via the event loop, same pattern
-        # as the research trigger above.
-        def _trigger_earning_cycle() -> None:
-            try:
-                loop = asyncio.get_event_loop()
-                asyncio.run_coroutine_threadsafe(self.earning_cycle(), loop)
-            except RuntimeError:
-                logger.warning("No running event loop for earning cycle")
-
+        # Earning cycle every 2 h — same cross-thread scheduling pattern. This
+        # is the only code path in the repo that earns money; if it cannot be
+        # scheduled it must fail loudly, never silently no-op.
         self._scheduler.add_job(
-            _trigger_earning_cycle, "interval", hours=2, id="earning_cycle"
+            self._trigger_earning_cycle, "interval", hours=2, id="earning_cycle"
         )
         self._scheduler.add_job(
             self.scan_email_for_payment_alerts, "interval", minutes=15, id="email_scan"
