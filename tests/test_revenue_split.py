@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.revenue_split import (
     PayoutRecord,
     RevenueSplitEngine,
@@ -90,6 +92,10 @@ class TestRevenueSplitPolicy:
     def test_fraction_sum_validation(self):
         # 0.1 + 0.8 + 0.1 = 1.0 is fine
         SplitFractions(owner="0.1", reinvest="0.8", reserve="0.1")
+
+    def test_fraction_sum_must_equal_one(self):
+        with pytest.raises(Exception, match="sum to 1.0"):
+            SplitFractions(owner="0.5", reinvest="0.5", reserve="0.1")
 
 
 # ---------------------------------------------------------------------------

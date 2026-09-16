@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +49,14 @@ class SplitFractions(BaseModel):
     def _to_decimal(cls, v: Any) -> Decimal:
         return Decimal(str(v))
 
-    @field_validator("owner")
-    @classmethod
-    def _validate_sum(cls, v: Any, info: Any) -> Any:
-        # Validate sum only when all three fields are present
-        return v
+    @model_validator(mode="after")
+    def _validate_sum(self) -> "SplitFractions":
+        total = self.owner + self.reinvest + self.reserve
+        if abs(total - Decimal("1")) > Decimal("0.001"):
+            raise ValueError(
+                f"owner + reinvest + reserve must sum to 1.0, got {total}"
+            )
+        return self
 
 
 class ThresholdTier(BaseModel):
