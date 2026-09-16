@@ -1342,18 +1342,12 @@ async def payoneer_webhook(request: Request):
     except PayoneerWebhookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # Implement retry logic for webhook failures (e.g. transient DB issues)
-    retries = 3
-    for attempt in range(retries):
-        try:
-            result = loop.record_payment(event)
-            return result
-        except Exception as exc:
-            if attempt == retries - 1:
-                logger.error("Failed to process webhook after %d attempts: %s", retries, exc)
-                raise HTTPException(status_code=500, detail="Internal server error during webhook processing")
-            logger.warning("Webhook processing failed, retrying (%d/%d): %s", attempt + 1, retries, exc)
-            await asyncio.sleep(1)
+    try:
+        result = loop.record_payment(event)
+        return result
+    except Exception as exc:
+        logger.error("Failed to process webhook: %s", exc)
+        raise HTTPException(status_code=500, detail="Internal server error during webhook processing")
 
 
 @app.post("/api/webhooks/payoneer/manual", dependencies=[Depends(require_manual_confirm_token)])
