@@ -15,12 +15,16 @@ services:
         sync: false
       - key: HF_TOKEN
         sync: false
-      # Gates every state-mutating endpoint (/api/withdraw,
-      # /api/spend/{id}/reject, /api/debt/tick, /api/research/trigger,
-      # /api/email/scan, /api/survival-mode) via require_api_token
-      # (src/api_auth.py) — that check fails CLOSED (503) when this is unset,
-      # so those endpoints are silently disabled on a fresh deploy until this
-      # is configured.
+      # Gates every stateful endpoint plus the read surface via
+      # require_api_token (src/api_auth.py): all mutating endpoints
+      # (/api/withdraw, /api/spend/{id}/reject, /api/debt/tick,
+      # /api/research/trigger, /api/email/scan, /api/survival-mode) AND the
+      # read state (/status, /api/spend/pending, /api/email/status,
+      # /api/survival-mode GET, and the /ws WebSocket handshake) require a
+      # valid token (Authorization header, uj_session cookie, or ?token=).
+      # The check fails CLOSED (503) when this is unset, so those endpoints
+      # are silently disabled on a fresh deploy until this is configured.
+      # /health stays public as a bare-liveness probe with no agent state.
       - key: API_AUTH_TOKEN
         sync: false
       # §9/§15 brain_router LLM fallback chain (NVIDIA -> Groq -> Gemini ->

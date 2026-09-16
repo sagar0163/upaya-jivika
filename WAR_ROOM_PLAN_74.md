@@ -28,12 +28,12 @@ WebSocket token auth.
       research-trigger fields)
 - [x] 3. Add WebSocket token auth (query param | Authorization header |
       `uj_session` cookie), reject with 4401/4403 before accept
-- [ ] 4. Update dashboard JS: authedFetch for `/api/spend/pending`, prompt for
+- [x] 4. Update dashboard JS: authedFetch for `/api/spend/pending`, prompt for
       auth on WS rejection (4401/4403) then reconnect, session-cookie-aware
       (no prompt when cookie already valid)
-- [ ] 5. Update existing tests + add new tests for the gated surface
+- [x] 5. Update existing tests + add new tests for the gated surface
       (HTTP 401/403, public /health liveness, WS rejection + acceptance)
-- [ ] 6. Update docs (src/api_auth.py docstring, README.md, artifact.md,
+- [x] 6. Update docs (src/api_auth.py docstring, README.md, artifact.md,
       render.yaml comments) to reflect the now-gated read surface
 - [ ] 7. Run `ruff check src tests` + full `pytest`; fix failures
 - [ ] 8. Final commit (removes this plan file) + push branch
