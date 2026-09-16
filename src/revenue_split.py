@@ -279,27 +279,37 @@ class RevenueSplitEngine:
         # Initiate payout — debits the dedicated ``owner_owed`` bucket (the money was
         # already removed from free during the split), reusing the standard
         # payout client + audit path.
-        from src.withdrawal import WithdrawalPool, process_withdrawal
+        from src.withdrawal import PayoutStatus, WithdrawalPool, process_withdrawal
 
         amount = owner_owed
         record = PayoutRecord(amount=amount)
 
         try:
             result = process_withdrawal(wallet, WithdrawalPool.OWNER_OWED, amount, payout_client)
-            record.completed = True
-            record.withdrawal_id = result.withdrawal_id
-            # process_withdrawal already zeroed owner_owed via user_withdraw_owner_owed
-
-            # Track seed-capital repayment
-            self.policy.seed_capital_repaid += amount
-
-            logger.info(
-                "Owner auto-payout: $%s (payout_id=%s, withdrawal=%s)",
-                amount,
-                record.payout_id,
-                result.withdrawal_id,
-            )
+            if result.payout_status is PayoutStatus.FAILED:
+                # Money never moved — restore the earmark so the next cadence
+                # retries. The attempt is still recorded for the audit trail.
+                wallet.owner_owed += amount
+                record.completed = False
+                record.error = result.detail or "payout failed"
+                logger.error("Owner auto-payout FAILED for %s: %s", record.payout_id, result.detail)
+            else:
+                # SENT or QUEUED_MANUAL: the owner's share has left the AI's
+                # reach and is queued — mark complete + track seed repayment.
+                record.completed = True
+                record.withdrawal_id = result.withdrawal_id
+                self.policy.seed_capital_repaid += amount
+                logger.info(
+                    "Owner auto-payout: $%s (payout_id=%s, withdrawal=%s)",
+                    amount,
+                    record.payout_id,
+                    result.withdrawal_id,
+                )
         except Exception as exc:
+            # process_withdrawal debits the pool *before* attempting payout, so
+            # an unexpected exception leaves owner_owed drained with nothing sent —
+            # restore it so the money stays earmarked for the next attempt.
+            wallet.owner_owed += amount
             record.completed = False
             record.error = str(exc)
             logger.error("Owner auto-payout failed: %s", exc)

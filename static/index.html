@@ -258,6 +258,23 @@
     .wallet-value.locked { color: var(--danger); }
     .wallet-value.free { color: var(--accent); }
     .wallet-value.debt { color: var(--warning); }
+    .wallet-value.owner-owed { color: var(--fg); border: 1px dashed var(--border); border-radius: 6px; padding: 2px 8px; }
+
+    /* Revenue Split (issue #75) */
+    .revenue-split { grid-column: span 1; }
+    .revenue-split-config { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+    .revenue-split-empty { font-size: 0.75rem; color: var(--fg-muted); }
+    .rs-tier {
+      font-size: 0.78rem; padding: 8px 10px; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 6px; font-family: var(--mono);
+    }
+    .rs-tier.active { border-color: var(--accent); }
+    .rs-tier b { color: var(--accent); }
+    .revenue-split-meta { display: flex; flex-direction: column; gap: 6px; }
+    .revenue-split-meta-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; }
+    .rs-label { color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.65rem; }
+    .rs-value { font-family: var(--mono); }
+    .rs-value.ok { color: var(--accent); }
 
     /* Withdrawal */
     .withdraw { grid-column: span 1; }
@@ -451,9 +468,39 @@
             <div class="wallet-label">Free Pool</div>
             <div class="wallet-value free mono" id="walletFree">$0.00</div>
           </div>
+          <div class="wallet-item">
+            <div class="wallet-label">Owner Owed</div>
+            <div class="wallet-value owner-owed mono" id="walletOwnerOwed">$0.00</div>
+          </div>
           <div class="wallet-item" style="grid-column: span 2;">
             <div class="wallet-label">Current Debt</div>
             <div class="wallet-value debt mono" id="walletDebt">$0.00</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Revenue Split (issue #75) -->
+      <div class="card revenue-split">
+        <h2>Revenue Split</h2>
+        <div class="revenue-split-config" id="revenueSplitConfig">
+          <div class="revenue-split-empty">No revenue split policy configured yet.</div>
+        </div>
+        <div class="revenue-split-meta">
+          <div class="revenue-split-meta-row">
+            <span class="rs-label">Owner Owed</span>
+            <span class="rs-value mono" id="rsOwnerOwed">$0.00</span>
+          </div>
+          <div class="revenue-split-meta-row">
+            <span class="rs-label">Seed Repaid</span>
+            <span class="rs-value mono" id="rsSeedRepaid">$0.00</span>
+          </div>
+          <div class="revenue-split-meta-row">
+            <span class="rs-label">Payouts</span>
+            <span class="rs-value mono" id="rsPayoutCount">0</span>
+          </div>
+          <div class="revenue-split-meta-row">
+            <span class="rs-label">Auto-Payout</span>
+            <span class="rs-value" id="rsPayoutStatus">off</span>
           </div>
         </div>
       </div>
@@ -624,6 +671,12 @@
       walletLocked: document.getElementById('walletLocked'),
       walletFree: document.getElementById('walletFree'),
       walletDebt: document.getElementById('walletDebt'),
+      walletOwnerOwed: document.getElementById('walletOwnerOwed'),
+      revenueSplitConfig: document.getElementById('revenueSplitConfig'),
+      rsOwnerOwed: document.getElementById('rsOwnerOwed'),
+      rsSeedRepaid: document.getElementById('rsSeedRepaid'),
+      rsPayoutCount: document.getElementById('rsPayoutCount'),
+      rsPayoutStatus: document.getElementById('rsPayoutStatus'),
       totalEarned: document.getElementById('totalEarned'),
       eventList: document.getElementById('eventList'),
       deathOverlay: document.getElementById('deathOverlay'),
@@ -774,6 +827,10 @@
       if (s.wallet_locked !== undefined) els.walletLocked.textContent = fmtMoney(s.wallet_locked);
       if (s.wallet_free !== undefined) els.walletFree.textContent = fmtMoney(s.wallet_free);
       if (s.wallet_debt !== undefined) els.walletDebt.textContent = fmtMoney(s.wallet_debt);
+      if (s.wallet_owner_owed !== undefined) els.walletOwnerOwed.textContent = fmtMoney(s.wallet_owner_owed);
+
+      // Revenue Split (issue #75)
+      if (s.revenue_split !== undefined) renderRevenueSplit(s.revenue_split);
 
       // Total earned
       if (s.total_earned !== undefined) els.totalEarned.textContent = fmtMoney(s.total_earned);
@@ -825,6 +882,43 @@
         { label: 'Death Line', data: deathLine, borderColor: 'var(--border)', borderWidth: 1, borderDash: [6, 6], fill: false, pointRadius: 0 },
       ];
       chart.update('none');
+    }
+
+    // ---- Revenue Split (issue #75) ----
+    function renderRevenueSplit(rs) {
+      if (!rs || !els.revenueSplitConfig) return;
+
+      const policy = rs.policy || {};
+      const active = rs.active_tier || {};
+      const tiers = policy.tiers || [];
+      const activeFrac = active.tier_fractions || {};
+
+      els.revenueSplitConfig.innerHTML = '';
+      if (!tiers.length) {
+        const empty = document.createElement('div');
+        empty.className = 'revenue-split-empty';
+        empty.textContent = 'No revenue split policy configured yet.';
+        els.revenueSplitConfig.appendChild(empty);
+      } else {
+        tiers.forEach(t => {
+          const isActive = activeFrac.owner === t.fractions.owner
+            && activeFrac.reinvest === t.fractions.reinvest
+            && activeFrac.reserve === t.fractions.reserve;
+          const el = document.createElement('div');
+          el.className = 'rs-tier' + (isActive ? ' active' : '');
+          el.innerHTML = `>= $${t.min_balance} &rarr; owner <b>${Math.round(Number(t.fractions.owner) * 100)}%</b> / reinvest <b>${Math.round(Number(t.fractions.reinvest) * 100)}%</b> / reserve <b>${Math.round(Number(t.fractions.reserve) * 100)}%</b>`;
+          els.revenueSplitConfig.appendChild(el);
+        });
+      }
+
+      if (typeof rs.owner_owed !== 'undefined') els.rsOwnerOwed.textContent = fmtMoney(rs.owner_owed);
+      if (typeof policy.seed_capital_repaid !== 'undefined') els.rsSeedRepaid.textContent = fmtMoney(policy.seed_capital_repaid);
+      if (typeof rs.payout_count !== 'undefined') els.rsPayoutCount.textContent = rs.payout_count;
+
+      const apEnabled = !!policy.auto_payout_enabled;
+      const apMin = policy.auto_payout_minimum != null ? `min $${policy.auto_payout_minimum}, every ${policy.auto_payout_cadence_hours || '?'}h` : '';
+      els.rsPayoutStatus.textContent = apEnabled ? `on (${apMin})` : 'off';
+      els.rsPayoutStatus.className = 'rs-value ' + (apEnabled ? 'ok' : '');
     }
 
     // ---- Event Feed ----
