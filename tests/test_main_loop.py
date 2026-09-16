@@ -1,5 +1,7 @@
 """Integration tests for main.py — survival loop wiring and full life cycle."""
 
+import asyncio
+import time
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
@@ -514,6 +516,185 @@ class TestStatusEndpoint:
 # ---------------------------------------------------------------------------
 # WebSocket endpoint
 # ---------------------------------------------------------------------------
+
+class TestSchedulerAsyncWrappers:
+    """Issue #70: APScheduler wrapper jobs must execute coroutines on the live
+    event loop captured at startup, not silently no-op from a worker thread.
+
+    BackgroundScheduler runs on its own threads. ``asyncio.get_event_loop()``
+    fails in non-main threads on Python 3.11+ (RuntimeError), and even when
+    it returns a loop that loop is never driven. ``_schedule_coroutine`` uses
+    ``run_coroutine_threadsafe`` against the captured live loop instead.
+    """
+
+    def _make_loop_in_running_event_loop(self, persistence_store):
+        """Construct a SurvivalLoop *inside* a live event loop running in a
+        daemon thread, so ``_event_loop`` captures a real running loop."""
+        import threading
+
+        import main as main_mod
+
+        holder: dict[str, object] = {}
+        started = threading.Event()
+
+        def _drive():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            holder["loop"] = loop
+            started.set()
+            try:
+                loop.run_forever()
+            except Exception:
+                pass
+
+        thread = threading.Thread(target=_drive, daemon=True)
+        thread.start()
+        assert started.wait(5), "background loop failed to start"
+        loop: asyncio.AbstractEventLoop = holder["loop"]  # type: ignore[assignment]
+
+        async def _construct():
+            return main_mod.SurvivalLoop(persistence=persistence_store)
+
+        sl = asyncio.run_coroutine_threadsafe(_construct(), loop).result(timeout=10)
+        # cleanup helper
+        def _cleanup():
+            if hasattr(sl, "_scheduler") and sl._scheduler.running:
+                sl._scheduler.shutdown(wait=False)
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+        return sl, loop, _cleanup
+
+    def test_schedule_coroutine_executes_on_live_loop(self):
+        """A coroutine submitted via _schedule_coroutine runs and completes on
+        the live event loop — not on the APScheduler worker thread."""
+        from src.persistence import InMemoryStore
+
+        sl, loop, cleanup = self._make_loop_in_running_event_loop(InMemoryStore())
+        try:
+            counter = {"n": 0}
+
+            async def _increment():
+                await asyncio.sleep(0)  # yields — only completes if loop runs it
+                counter["n"] += 1
+
+            future = sl._schedule_coroutine(_increment(), "test")
+            assert future is not None
+            # Wait for the future to complete (coroutine ran and finished)
+            future.result(timeout=5)
+            assert counter["n"] == 1
+        finally:
+            cleanup()
+
+    def test_research_trigger_job_fires_and_executes_coroutine(self):
+        """The 'research_trigger' APScheduler job fires its wrapper, which
+        schedules research_trigger() onto the live loop and the coroutine runs
+        to completion (not just 'scheduled')."""
+        from src.persistence import InMemoryStore
+
+        sl, loop, cleanup = self._make_loop_in_running_event_loop(InMemoryStore())
+        try:
+            executed = {"done": False}
+
+            async def _spy():
+                # Only completes if the captured live loop actually drives the
+                # coroutine past this await boundary (a dead/unrun loop leaves
+                # the counter at 0).
+                await asyncio.sleep(0)
+                executed["done"] = True
+
+            async def _noop_research():
+                return []
+
+            sl.research.research_earning_platforms = _noop_research  # type: ignore[assignment]
+            sl.research_trigger = _spy  # type: ignore[assignment]
+
+            sl.start()
+            job = sl._scheduler.get_job("research_trigger")
+            assert job is not None
+
+            # Simulate the APScheduler worker thread firing the job
+            job.func()
+
+            deadline = time.time() + 5
+            while not executed["done"] and time.time() < deadline:
+                time.sleep(0.01)
+            assert executed["done"], "research_trigger coroutine never executed on the live loop"
+        finally:
+            cleanup()
+
+    def test_earning_cycle_job_fires_and_executes_coroutine(self):
+        """The 'earning_cycle' APScheduler job fires its wrapper, which
+        schedules the *real* earning_cycle() coroutine onto the live loop and
+        it runs to completion: a successful task outcome is recorded into the
+        respawn policy, proving money-path code executed on the real loop."""
+        from decimal import Decimal
+
+        from src.persistence import InMemoryStore
+        from src.task_scorer import PaymentMethod, TaskCandidate, TaskResult, TaskType
+        from src.task_scorer import Platform as EarningPlatform
+        from src.vault import create_vault
+
+        sl, loop, cleanup = self._make_loop_in_running_event_loop(InMemoryStore())
+        try:
+            sl.task_executor._vault = create_vault()
+            sl.task_executor._vault.set_override("clickworker", "secret")
+            sl.task_executor.start = AsyncMock()
+            candidate = TaskCandidate(
+                platform=EarningPlatform.CLICKWORKER,
+                task_type=TaskType.MICROTASK,
+                title="Scheduled test task",
+                estimated_pay=Decimal("3.00"),
+                estimated_hours=Decimal("0.5"),
+                payment_method=PaymentMethod.PAYONEER,
+            )
+            sl.task_executor.run_earning_cycle = AsyncMock(
+                return_value=[
+                    TaskResult(
+                        task_id="sched-1",
+                        candidate=candidate,
+                        success=True,
+                        amount_earned=Decimal("3.00"),
+                        time_spent_hours=Decimal("0.5"),
+                    )
+                ]
+            )
+
+            sl.start()
+            job = sl._scheduler.get_job("earning_cycle")
+            assert job is not None
+
+            # Simulate the APScheduler worker thread firing the job
+            job.func()
+
+            # Wait for the real earning_cycle to run to completion on the loop
+            deadline = time.time() + 5
+            while len(sl.respawn) == 0 and time.time() < deadline:
+                time.sleep(0.01)
+            assert len(sl.respawn) == 1, (
+                "earning_cycle never completed on the live loop — outcome not recorded"
+            )
+        finally:
+            cleanup()
+
+    def test_schedule_coroutine_returns_none_when_no_loop(self):
+        """_schedule_coroutine logs an error and returns None when
+        _event_loop is None (i.e. loop was constructed outside the app)."""
+        from main import SurvivalLoop
+        from src.persistence import InMemoryStore
+
+        sl = SurvivalLoop(persistence=InMemoryStore())
+        assert sl._event_loop is None  # constructed outside async context
+
+        async def _noop():
+            pass
+
+        coro = _noop()
+        result = sl._schedule_coroutine(coro, "test no-op")
+        coro.close()  # never scheduled → close to avoid a "never awaited" warning
+        assert result is None
+
 
 class TestWebSocketBroadcast:
     """Verify WebSocket broadcasts when loop events occur."""
