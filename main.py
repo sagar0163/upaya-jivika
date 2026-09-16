@@ -102,7 +102,9 @@ ws_manager = ConnectionManager()
 
 #: Custom WebSocket close codes for unauthenticated handshakes (issue #74).
 #: RFC 6455 reserves 1000-4999 for applications; 4401/4403 mirror the HTTP
-#: 401/403 semantics the rest of the surface uses.
+#: 401/403 semantics the rest of the surface uses. The connection is accepted
+#: and closed with one of these before any state is sent (see
+#: ``_reject_websocket``).
 WS_CLOSE_MISSING_TOKEN = 4401
 WS_CLOSE_INVALID_TOKEN = 4403
 
@@ -1163,19 +1165,17 @@ def status():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     # Issue #74: the WebSocket pushes the full wallet/debt/life snapshot on
-    # every event, so the handshake must carry a valid token (via the
-    # httpOnly session cookie that browsers send automatically, a Bearer
-    # header, or a ?token= query param — see extract_presented_token). Fails
-    # closed: leave the connection un-accepted with a custom close code
-    # (4401 missing, 4403 invalid — 4000-4999 is the application-defined
-    # range per RFC 6455) so a rejected client never receives state.
+    # every event, so the handshake must carry a valid token — via the
+    # httpOnly session cookie (browsers attach it to the same-origin
+    # handshake automatically), an Authorization: Bearer header, or a
+    # ?token= query param (see extract_presented_token). Fails closed.
     expected = os.environ.get("API_AUTH_TOKEN")
     presented = extract_presented_token(websocket)
     if not expected or not presented:
-        await websocket.close(code=WS_CLOSE_MISSING_TOKEN, reason="Authentication required")
+        await _reject_websocket(websocket, WS_CLOSE_MISSING_TOKEN, "Authentication required")
         return
     if not hmac.compare_digest(presented, expected):
-        await websocket.close(code=WS_CLOSE_INVALID_TOKEN, reason="Invalid API token")
+        await _reject_websocket(websocket, WS_CLOSE_INVALID_TOKEN, "Invalid API token")
         return
 
     await ws_manager.connect(websocket)
@@ -1191,6 +1191,18 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
+
+async def _reject_websocket(websocket: WebSocket, code: int, reason: str) -> None:
+    """Accept then immediately close an unauthenticated WebSocket handshake.
+
+    A handshake-level HTTP 403 would reach browsers as a generic 1006 close
+    code — indistinguishable from "server down" — so the dashboard couldn't
+    react to "auth required". Upgrading first delivers a real close frame
+    carrying 4401/4403 instead. No state is sent before the close.
+    """
+    await websocket.accept()
+    await websocket.close(code=code, reason=reason)
 
 
 # ---------------------------------------------------------------------------

@@ -22,11 +22,11 @@ WebSocket token auth.
   with close codes 4401 (missing) / 4403 (invalid) BEFORE accepting.
 
 ## Subtasks
-- [ ] 1. Gate `/status`, `/api/spend/pending`, `/api/email/status`,
+- [x] 1. Gate `/status`, `/api/spend/pending`, `/api/email/status`,
       `/api/survival-mode` (GET) with `require_api_token`
-- [ ] 2. Split `/health` into bare public liveness (drop debt/life/earnings/
+- [x] 2. Split `/health` into bare public liveness (drop debt/life/earnings/
       research-trigger fields)
-- [ ] 3. Add WebSocket token auth (query param | Authorization header |
+- [x] 3. Add WebSocket token auth (query param | Authorization header |
       `uj_session` cookie), reject with 4401/4403 before accept
 - [ ] 4. Update dashboard JS: authedFetch for `/api/spend/pending`, prompt for
       auth on WS rejection (4401/4403) then reconnect, session-cookie-aware

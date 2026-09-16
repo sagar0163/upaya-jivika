@@ -553,30 +553,39 @@
   <div class="rebirth-flash" id="rebirthFlash"></div>
 
   <script>
-    // ---- API auth (write endpoints require a token — see src/api_auth.py) ----
-    // The token itself is never held in page JS/localStorage: on first use
-    // it's exchanged once for an httpOnly session cookie (POST /api/session),
-    // which the browser attaches automatically and page script can't read —
-    // so a future XSS on this page can't steal it via storage access.
+    // ---- API auth (write + read-state endpoints require a token — see
+    // src/api_auth.py) ----
+    // Everything that returns real agent state (/status, /ws, /api/spend/pending)
+    // is gated behind API_AUTH_TOKEN (issue #74). The token is never held in
+    // page JS/localStorage: on first use it's exchanged once for an httpOnly
+    // session cookie (POST /api/session), which the browser attaches
+    // automatically and page script can't read — so a future XSS on this page
+    // can't steal it via storage access.
     let sessionEstablished = false;
+    let sessionPrompt = null; // shares one in-flight token prompt so concurrent
+                              // 401s (WS + REST) don't stack dialog boxes
 
     async function establishSession() {
-      const token = window.prompt('Enter the dashboard API token (set as API_AUTH_TOKEN on the server):');
-      if (!token) return false;
-      const resp = await fetch('/api/session', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token }),
-      });
-      sessionEstablished = resp.ok;
-      return resp.ok;
+      if (sessionPrompt) return sessionPrompt;
+      sessionPrompt = (async () => {
+        const token = window.prompt('Enter the dashboard API token (set as API_AUTH_TOKEN on the server):');
+        if (!token) return false;
+        const resp = await fetch('/api/session', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        });
+        sessionEstablished = resp.ok;
+        if (sessionEstablished) connect(); // fresh cookie lets the WS handshake through
+        return resp.ok;
+      })().finally(() => { sessionPrompt = null; });
+      return sessionPrompt;
     }
 
     async function authedFetch(url, options = {}) {
-      if (!sessionEstablished) {
-        await establishSession();
-      }
+      // Try with whatever cookie we already hold first — a valid session must
+      // not trigger a token prompt on every page load.
       let resp = await fetch(url, Object.assign({}, options, { credentials: 'include' }));
       if (resp.status === 401 || resp.status === 403) {
         sessionEstablished = false;
@@ -654,10 +663,16 @@
         ws.send(JSON.stringify({ type: 'get_status' }));
       };
       ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
-      ws.onclose = () => {
+      ws.onclose = (e) => {
         els.connStatus.className = 'connection-status';
         els.connText.textContent = 'Disconnected';
-        scheduleReconnect();
+        if (e.code === 4401 || e.code === 4403) {
+          // Rejected handshake (missing/invalid token) — prompt, then reconnect.
+          sessionEstablished = false;
+          establishSession().then((ok) => { if (ok) connect(); });
+        } else {
+          scheduleReconnect();
+        }
       };
       ws.onerror = () => { /* onclose handles reconnect */ };
     }
@@ -963,7 +978,9 @@
 
     async function refreshPendingSpends() {
       try {
-        const resp = await fetch('/api/spend/pending');
+        // Gated (issue #74) — the pending-spend list includes the AI's
+        // reasons, so it must go through the session-cookie auth path.
+        const resp = await authedFetch('/api/spend/pending');
         if (!resp.ok) return;
         const data = await resp.json();
         renderPendingSpends(data.pending || []);
