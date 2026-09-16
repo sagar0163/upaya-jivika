@@ -9,5 +9,5 @@ Capture the running event loop once at startup and use it in the scheduler wrapp
 ## Subtasks
 - [x] Fix `SurvivalLoop.__init__` to reliably capture the event loop (store as `self._event_loop`)
 - [x] Rewrite `_trigger_research` and `_trigger_earning_cycle` wrappers to use `self._event_loop` instead of `asyncio.get_event_loop()`
-- [ ] Add unit test proving the wrapper actually executes the coroutine on a real running loop
+- [x] Add unit test proving the wrapper actually executes the coroutine on a real running loop
 - [ ] Run full test suite and fix any failures
