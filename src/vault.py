@@ -29,16 +29,30 @@ logger = logging.getLogger(__name__)
 
 _ENCRYPTED_PREFIX = "enc:v1:"
 
+# Env flag that explicitly permits plaintext credential writes (local/CI
+# only). Without it, a live Supabase vault refuses to write plaintext.
+ALLOW_PLAINTEXT_ENV = "ALLOW_PLAINTEXT_VAULT"
+
+
+class PlaintextVaultError(RuntimeError):
+    """Raised when a credential write would store plaintext in a live vault.
+
+    Fail-closed behavior (issue #72): the vault holds platform login
+    passwords — the agent's revenue asset. Storing them in cleartext just
+    because ``VAULT_ENCRYPTION_KEY`` is unset is indefensible when a Supabase
+    read-access leak would expose every one of them. Callers must either set
+    the encryption key or explicitly opt into plaintext for local/CI work.
+    """
+
 
 def _get_fernet():
     """Return a Fernet cipher derived from ``VAULT_ENCRYPTION_KEY``, or None.
 
-    Soft dependency, same pattern as the rest of this codebase's optional
-    secrets: if the env var isn't set, callers fall back to storing values
-    in plaintext (with a loud warning) rather than crashing — but a Supabase
-    read-access leak (leaked service key, RLS misconfiguration, or a DB
-    dump) would then expose every platform login password in cleartext.
-    Setting this var is what actually closes that hole.
+    ``VAULT_ENCRYPTION_KEY`` is hard-required for any live (Supabase-backed)
+    vault write (issue #72): with it unset, ``SupabaseSecretStore`` refuses
+    to store plaintext unless ``ALLOW_PLAINTEXT_VAULT=1`` explicitly opts in
+    for local/CI use. Legacy plaintext rows remain readable during migration
+    (see ``scripts/migrate_plaintext_vault.py``).
     """
     key = os.environ.get("VAULT_ENCRYPTION_KEY")
     if not key:
@@ -47,6 +61,48 @@ def _get_fernet():
 
     derived = base64.urlsafe_b64encode(hashlib.sha256(key.encode()).digest())
     return Fernet(derived)
+
+
+def is_production_environment() -> bool:
+    """True when operating against a live/remote vault backend.
+
+    Heuristic: a configured ``SUPABASE_URL`` means credentials at rest live
+    on a remote database, so the fail-closed production path applies.
+    """
+    return bool(os.environ.get("SUPABASE_URL"))
+
+
+def plaintext_allowed() -> bool:
+    """Explicit opt-in flag for local/CI plaintext vault behavior."""
+    return os.environ.get(ALLOW_PLAINTEXT_ENV) == "1"
+
+
+def assert_vault_security_ready() -> None:
+    """Startup check: a live vault must never operate unencrypted.
+
+    Raises :class:`PlaintextVaultError` when the vault would run against a
+    Supabase backend without ``VAULT_ENCRYPTION_KEY`` configured — failing
+    the app at boot rather than silently storing secrets in cleartext. Local
+    development (no ``SUPABASE_URL``) is unaffected, and ``ALLOW_PLAINTEXT_VAULT=1``
+    explicitly downgrades the check to a warning for local/CI runs.
+    """
+    if _get_fernet() is not None:
+        return
+    if not is_production_environment():
+        return
+    if plaintext_allowed():
+        logger.warning(
+            "Vault: VAULT_ENCRYPTION_KEY is not set and ALLOW_PLAINTEXT_VAULT=1 — "
+            "credentials may be stored in plaintext (local/CI only). "
+            "Set VAULT_ENCRYPTION_KEY before entering production."
+        )
+        return
+    raise PlaintextVaultError(
+        "VAULT_ENCRYPTION_KEY is not set but SUPABASE_URL is — refusing to run "
+        "an unencrypted vault. Set VAULT_ENCRYPTION_KEY to encrypt platform "
+        "credentials at rest, or set ALLOW_PLAINTEXT_VAULT=1 to explicitly "
+        "allow plaintext for local/CI use only."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +210,16 @@ class SupabaseSecretStore(SecretStore):
         from supabase import create_client
         url = os.environ["SUPABASE_URL"]
         key = os.environ["SUPABASE_KEY"]
+        # Fail closed (issue #72): never operate an unencrypted live vault.
+        # If VAULT_ENCRYPTION_KEY is unset the store refuses to construct
+        # unless ALLOW_PLAINTEXT_VAULT=1 explicitly opts in (local/CI only).
+        if _get_fernet() is None and not plaintext_allowed():
+            raise PlaintextVaultError(
+                "Supabase vault requires VAULT_ENCRYPTION_KEY to be set — "
+                "refusing to operate without encryption at rest. Set "
+                "VAULT_ENCRYPTION_KEY, or set ALLOW_PLAINTEXT_VAULT=1 to "
+                "explicitly allow plaintext (local/CI only)."
+            )
         self._client = create_client(url, key)
         self._ensure_table()
 
@@ -203,12 +269,21 @@ class SupabaseSecretStore(SecretStore):
         fernet = _get_fernet()
         if fernet is not None:
             stored_value = _ENCRYPTED_PREFIX + fernet.encrypt(value.encode()).decode()
-        else:
+        elif plaintext_allowed():
             logger.warning(
                 f"Storing credential {provider}/{key} in plaintext — "
-                "set VAULT_ENCRYPTION_KEY to encrypt platform passwords at rest"
+                "VAULT_ENCRYPTION_KEY is not set. Plaintext is only allowed "
+                "because ALLOW_PLAINTEXT_VAULT=1 (local/CI only); set "
+                "VAULT_ENCRYPTION_KEY to encrypt platform passwords at rest"
             )
             stored_value = value
+        else:
+            raise PlaintextVaultError(
+                f"Refusing to store {provider}/{key} in plaintext — "
+                "VAULT_ENCRYPTION_KEY is not set. Set it to encrypt "
+                "credentials at rest, or set ALLOW_PLAINTEXT_VAULT=1 to "
+                "explicitly allow plaintext (local/CI only)."
+            )
         self._client.table("credentials").upsert(
             {"provider": provider, "key": key, "value": stored_value},
             on_conflict="provider,key",
