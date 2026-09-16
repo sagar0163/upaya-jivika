@@ -2,6 +2,6 @@
 - [x] Implement free-pool earnings split logic on payment_confirmed
 - [x] Implement auto-payout scheduler for owner share above minimum
 - [x] Expose policy and history on dashboard (API and/or UI)
-- [ ] Document repayment path for operator seed capital
-- [ ] Write tests for revenue split policy and auto-payout
+- [x] Document repayment path for operator seed capital
+- [x] Write tests for revenue split policy and auto-payout
 - [ ] Run tests and fix any failures

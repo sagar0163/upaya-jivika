@@ -160,6 +160,52 @@ EARNED MONEY
 | Hard | $1.00 | 24h |
 | Brutal | $0.50 | 12h |
 
+### Revenue Split & Owner Payouts (issue #75)
+
+On every confirmed payment the *new free-pool earnings* (after debt repayment)
+are split into owner / reinvest / reserve according to a persisted, milestone
+(threshold) policy — the forage/Franklin pattern: as the free-pool balance
+crosses a threshold, the split shifts toward the owner.
+
+| Tier (free-pool balance) | owner | reinvest | reserve |
+|---|---|---|---|
+| $0–$49.99 | 0% | 100% | 0% |
+| $50–$199.99 | 10% | 80% | 10% |
+| ≥ $200 | 30% | 50% | 20% |
+
+- **owner** → set aside in `owner_owed`, paid out on schedule (see below)
+- **reinvest** → stays in the free pool, still subject to the existing
+  `ai_spend` / `approval_gate` gates
+- **reserve** → moved to the locked pool (permanent floor, AI can never touch)
+
+The policy is configurable and persisted:
+
+- `GET /api/revenue-split/policy` · `POST /api/revenue-split/policy` — read /
+  replace the policy (tiers, `auto_payout_enabled`, `auto_payout_minimum`,
+  `auto_payout_cadence_hours`)
+- `GET /api/revenue-split/payouts` — payout history + `seed_capital_repaid`
+- `POST /api/revenue-split/payouts/trigger` — manually attempt a payout (still
+  min-balance + cadence gated)
+
+**Auto-payout.** When `auto_payout_enabled` is true, the survival tick checks
+whether `owner_owed` is at least `auto_payout_minimum` AND the last payout is
+older than `auto_payout_cadence_hours`; if both hold it fires a withdrawal from
+the dedicated `owner_owed` bucket through the existing Payoneer payout path
+(`process_withdrawal`, `src/withdrawal.py`). It is idempotent — re-invoking it
+within the cadence window is a no-op — and every attempt is recorded in the
+audit trail and cold archive even on failure. A failed payout restores the
+earmark so the next cadence retries.
+
+**Seed-capital repayment path.** The operator's seed / operating capital is
+tracked as a running counter (`seed_capital_repaid`) that accumulates with every
+completed owner payout. Point it at the seed amount (in `POST /api/revenue-split/policy`)
+and treat the dashboard's **Seed Repaid** figure as the repayment progress bar:
+until `seed_capital_repaid` >= the seed amount, set the owner fraction to 0 and
+the reinvest/reserve fractions to the growth profile you want; once it crosses the
+seed amount, raise the owner fraction so the operator starts taking a real cut.
+There is no separate "loan" account — the owner's share *is* the repayment
+vehicle, which is exactly the forage/Franklin model.
+
 ---
 
 ## 5. Survival States
@@ -473,7 +519,7 @@ dashboard.py         — Rich terminal UI, live status
 | ✅ | CI pipeline | **SOLVED** — `ci.yml` now runs `ruff` + `pytest` (was a Node no-op); flaky WS test fixed |
 | 🟡 | Email inbox | `src/email_inbox.py` built — IMAP client (soft-configured via `EMAIL_IMAP_*` env vars), verification link/code extraction, payment-alert detection; payment-alert scanning is live (runs every 15 min, wired into the event feed/cold archive). **Not wired to a signup flow, by design**: no connector calls `wait_for_verification_email` because there is no signup flow at all — see [§1 Scope boundary](#1-concept). Account creation requires a human to supply tax ID/bank/phone identity that the agent should not hold, so this isn't a gap to close so much as the edge of the agent's autonomy: a human provisions the account, the agent takes it from login onward |
 | 🟡 | CAPTCHA handling | §19 detection/escalation/blocklist + playwright-stealth + `nodriver`/`Camoufox` cookie-warming + 2Captcha paid solving with Anti-Captcha fallback (reCAPTCHA/hCaptcha/Cloudflare Turnstile) are all built and wired into `TaskExecutor`/`BrowserSessionManager`/`PlatformConnector`. Deliberate scope choice per explicit user decision (2026-09-04): implements full bypass/evasion, accepting the ToS-violation risk on platforms with bot protection. Remaining gaps: Kasada has no ladder entry at all (still blocklist-and-abandon), and real-world bypass effectiveness against live Cloudflare/DataDome/Akamai is unverified — this environment has no live protected target to test against |
-| ✅ | Withdrawal mechanism | **SOLVED** — Dashboard UI + `POST /api/withdraw` (`src/withdrawal.py`) debits the chosen pool and requests a Payoneer payout, queuing for manual processing until `PAYONEER_API_KEY`/`PAYONEER_PROGRAM_ID` are configured (same soft-dependency pattern as the Payoneer webhook) |
+| ✅ | Withdrawal mechanism | **SOLVED** — Dashboard UI + `POST /api/withdraw` (`src/withdrawal.py`) debits the chosen pool and requests a Payoneer payout, queuing for manual processing until `PAYONEER_API_KEY`/`PAYONEER_PROGRAM_ID` are configured (same soft-dependency pattern as the Payoneer webhook). Issue #75 adds scheduled owner auto-payouts (`owner_owed` bucket, min-balance + cadence gated) driven by a persisted revenue-split policy (`GET`/`POST /api/revenue-split/policy`, history at `GET /api/revenue-split/payouts`) |
 | 🟡 | Ethical guardrail | **SOLVED** — `src/guardrails.py` hard blacklist (spam/fake review/plagiarism/ToS violation/illegal) enforced in `task_scorer` + `task_executor` even in Terminal state |
 | 🟡 | Respawn policy | **SOLVED** (`src/respawn_policy.py`) — `FRESH_SLATE` vs `CARRY_FORWARD` of empirical task scores on rebirth |
 | ✅ | Human approval gate | **SOLVED** — `src/approval_gate.py`: veto-window model, spends ≥ $2.00 announced (alert + dashboard card) and held 6h rather than blocking; auto-approve and execute via `Wallet.ai_spend` if unrejected, resolved once per minute in `survival_tick`. `GET /api/spend/pending` / `POST /api/spend/{id}/reject` plus a dashboard "Pending AI Spends" card let the user veto within the window. Verified live in production (`pending_spends` Supabase table created, endpoints return 200) |
