@@ -90,11 +90,17 @@ class PayoneerWebhookEvent(BaseModel):
         return self.status is PaymentStatus.COMPLETED
 
 
+import json
+import time
+
+_seen_nonces: dict[str, float] = {}
+
 def verify_signature(secret: str, raw_body: bytes, signature: str) -> bool:
     """Verify an HMAC-SHA256 signature of ``raw_body`` using ``secret``.
 
     Fails closed: any empty/missing input is treated as invalid. Uses
     :func:`hmac.compare_digest` to avoid timing-attack leakage.
+    Also verifies freshness via `timestamp` and `nonce` in the JSON payload.
     """
     if not secret or not signature:
         return False
@@ -104,7 +110,43 @@ def verify_signature(secret: str, raw_body: bytes, signature: str) -> bool:
     candidate = signature.strip()
     if candidate.startswith("sha256="):
         candidate = candidate[len("sha256=") :]
-    return hmac.compare_digest(expected, candidate.lower())
+    if not hmac.compare_digest(expected, candidate.lower()):
+        return False
+
+    try:
+        payload = json.loads(raw_body)
+    except Exception:
+        return False
+
+    timestamp = payload.get("timestamp")
+    nonce = payload.get("nonce")
+
+    if not timestamp or not nonce:
+        # Fail if timestamp/nonce are missing for strict freshness check
+        return False
+
+    try:
+        ts = float(timestamp)
+    except (ValueError, TypeError):
+        return False
+
+    now = time.time()
+    # 5-minute freshness window (fail replayed webhooks > 5 minutes old)
+    if abs(now - ts) > 300:
+        return False
+
+    if nonce in _seen_nonces:
+        return False
+
+    # Cleanup stale nonces
+    if len(_seen_nonces) > 1000:
+        stale = [k for k, v in _seen_nonces.items() if now - v > 300]
+        for k in stale:
+            _seen_nonces.pop(k, None)
+
+    _seen_nonces[nonce] = now
+
+    return True
 
 
 def _first_present(payload: dict[str, Any], keys: tuple[str, ...]) -> Optional[Any]:
