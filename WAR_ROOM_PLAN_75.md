@@ -1,0 +1,5 @@
+- [ ] Define RevenueSplitPolicy config table/model
+- [ ] Implement free-pool earnings split logic on payment_confirmed
+- [ ] Implement auto-payout scheduler for owner share above minimum
+- [ ] Expose policy and history on dashboard (API and/or UI)
+- [ ] Document repayment path for operator seed capital
