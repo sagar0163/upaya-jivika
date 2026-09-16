@@ -286,6 +286,18 @@ class PersistenceStore(ABC):
         """Return the persisted survival-mode value, or None if never set."""
 
     @abstractmethod
+    def save_last_research_at(self, ts: datetime) -> None:
+        """Persist the timestamp of the last completed research cycle.
+
+        Used by both the in-app scheduler and the GH Actions cron script to
+        deduplicate: only one runner fires per 6-hour window.
+        """
+
+    @abstractmethod
+    def load_last_research_at(self) -> Optional[datetime]:
+        """Return the timestamp of the last completed research cycle, or None."""
+
+    @abstractmethod
     def clear(self) -> None:
         """Reset hot-memory state while preserving the soul-crystal archive."""
 
@@ -430,6 +442,12 @@ class InMemoryStore(PersistenceStore):
 
     def load_survival_mode(self) -> Optional[bool]:
         return self._survival_mode
+
+    def save_last_research_at(self, ts: datetime) -> None:
+        self._last_research_at = ts
+
+    def load_last_research_at(self) -> Optional[datetime]:
+        return getattr(self, "_last_research_at", None)
 
     def clear(self) -> None:
         # Preserve the permanent soul-crystal archive (§10 Layer 2/3): it must
@@ -702,6 +720,18 @@ class SupabaseStore(PersistenceStore):
             return None
         try:
             return bool(d["enabled"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def save_last_research_at(self, ts: datetime) -> None:
+        self._upsert_row("app_settings", "last_research_at", {"ts": ts.isoformat()})
+
+    def load_last_research_at(self) -> Optional[datetime]:
+        d = self._load_row("app_settings", "last_research_at")
+        if d is None:
+            return None
+        try:
+            return datetime.fromisoformat(d["ts"])
         except (KeyError, TypeError, ValueError):
             return None
 
