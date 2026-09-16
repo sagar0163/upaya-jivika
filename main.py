@@ -32,7 +32,7 @@ from fastapi.responses import FileResponse
 
 from src.alert_system import AlertLevel, AlertSystem
 from src.ancestral_memory import AncestralMemory, load_ancestral_memory
-from src.api_auth import SESSION_COOKIE, require_api_token
+from src.api_auth import SESSION_COOKIE, extract_presented_token, require_api_token
 from src.approval_gate import ApprovalGate, SpendDecision
 from src.audit_trail import AuditTrail
 from src.captcha_handler import BotDetectionTracker
@@ -98,6 +98,15 @@ class ConnectionManager:
             self.active_connections.discard(d)
 
 ws_manager = ConnectionManager()
+
+
+#: Custom WebSocket close codes for unauthenticated handshakes (issue #74).
+#: RFC 6455 reserves 1000-4999 for applications; 4401/4403 mirror the HTTP
+#: 401/403 semantics the rest of the surface uses. The connection is accepted
+#: and closed with one of these before any state is sent (see
+#: ``_reject_websocket``).
+WS_CLOSE_MISSING_TOKEN = 4401
+WS_CLOSE_INVALID_TOKEN = 4403
 
 
 # ---------------------------------------------------------------------------
@@ -1134,36 +1143,20 @@ def dashboard():
 
 @app.get("/health")
 def health():
-    """Health-check — always returns 200 while the service is up."""
-    loop = _loop
-    if loop is None:
-        return {"status": "initialising"}
-        
-    next_trigger = None
-    if hasattr(loop, '_scheduler') and loop._scheduler:
-        job = loop._scheduler.get_job('research_trigger')
-        if job and job.next_run_time:
-            next_trigger = job.next_run_time.isoformat()
-            
-    last_earnings = "0.00"
-    if hasattr(loop, 'audit_trail') and loop.audit_trail:
-        for entry in reversed(loop.audit_trail.entries()):
-            if entry.kind == "task_executed" and entry.outcome.get("success"):
-                last_earnings = str(entry.outcome.get("amount_earned", "0.00"))
-                break
-                
-    return {
-        "status": "alive" if loop.debt_engine.alive else "dead",
-        "life": loop.debt_engine.state.life_number,
-        "debt": str(loop.debt_engine.debt),
-        "survival_state": loop.state_machine.state.value,
-        "last_earnings": last_earnings,
-        "next_research_trigger": next_trigger,
-    }
+    """Bare liveness probe for uptime monitors (issue #74).
 
-@app.get("/status")
+    Deliberately returns no economic state: no debt, life number, survival
+    state, last earnings, or research-trigger schedule. Anything with a
+    wallet/debt/earnings payload belongs behind ``require_api_token`` (see
+    ``/status``). Uptime checks only need to know the process is up.
+    """
+    if _loop is None:
+        return {"status": "initialising"}
+    return {"status": "ok"}
+
+@app.get("/status", dependencies=[Depends(require_api_token)])
 def status():
-    """Return the current survival state."""
+    """Return the current survival state (gated — full wallet/debt/life snapshot)."""
     loop = _loop
     if loop is None:
         raise HTTPException(status_code=503, detail="initialising")
@@ -1171,6 +1164,20 @@ def status():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    # Issue #74: the WebSocket pushes the full wallet/debt/life snapshot on
+    # every event, so the handshake must carry a valid token — via the
+    # httpOnly session cookie (browsers attach it to the same-origin
+    # handshake automatically), an Authorization: Bearer header, or a
+    # ?token= query param (see extract_presented_token). Fails closed.
+    expected = os.environ.get("API_AUTH_TOKEN")
+    presented = extract_presented_token(websocket)
+    if not expected or not presented:
+        await _reject_websocket(websocket, WS_CLOSE_MISSING_TOKEN, "Authentication required")
+        return
+    if not hmac.compare_digest(presented, expected):
+        await _reject_websocket(websocket, WS_CLOSE_INVALID_TOKEN, "Invalid API token")
+        return
+
     await ws_manager.connect(websocket)
     loop = _loop
     if loop is not None:
@@ -1184,6 +1191,18 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
+
+async def _reject_websocket(websocket: WebSocket, code: int, reason: str) -> None:
+    """Accept then immediately close an unauthenticated WebSocket handshake.
+
+    A handshake-level HTTP 403 would reach browsers as a generic 1006 close
+    code — indistinguishable from "server down" — so the dashboard couldn't
+    react to "auth required". Upgrading first delivers a real close frame
+    carrying 4401/4403 instead. No state is sent before the close.
+    """
+    await websocket.accept()
+    await websocket.close(code=code, reason=reason)
 
 
 # ---------------------------------------------------------------------------
@@ -1379,9 +1398,14 @@ async def manual_payoneer_confirmation(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/email/status")
+@app.get("/api/email/status", dependencies=[Depends(require_api_token)])
 async def email_status_endpoint():
-    """Report whether the email inbox is configured (diagnostic only)."""
+    """Report whether the email inbox is configured (diagnostic only).
+
+    Gated (issue #74) — revealing whether an IMAP inbox is wired up would let
+    strangers probe the agent's configured infrastructure for call-and-response
+    email fishing.
+    """
     loop = _loop
     if loop is None:
         raise HTTPException(status_code=503, detail="Survival loop not initialised")
@@ -1398,9 +1422,13 @@ async def email_scan_endpoint():
     return {"alerts_found": alerts}
 
 
-@app.get("/api/spend/pending")
+@app.get("/api/spend/pending", dependencies=[Depends(require_api_token)])
 async def pending_spends_endpoint():
-    """List AI spend requests currently held in their veto window."""
+    """List AI spend requests currently held in their veto window.
+
+    Gated (issue #74) — pending spends include the AI's reasons, which leak the
+    agent's research/strategy to anyone who can fetch the URL.
+    """
     loop = _loop
     if loop is None:
         raise HTTPException(status_code=503, detail="Survival loop not initialised")
@@ -1453,7 +1481,7 @@ async def withdraw_endpoint(request: Request):
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/survival-mode")
+@app.get("/api/survival-mode", dependencies=[Depends(require_api_token)])
 async def get_survival_mode_endpoint() -> dict[str, Any]:
     """Return whether survival / reincarnation mode is currently active."""
     loop = _loop

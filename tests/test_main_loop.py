@@ -303,7 +303,12 @@ class TestHealthEndpoint:
         assert resp.json()["status"] == "alive"
 
     def test_health_during_loop(self):
-        """The production /health handler returns 200 while the loop is live."""
+        """/health is a bare liveness probe — public but with no agent state.
+
+        Issue #74: uptime monitors keep a public liveness endpoint, but the
+        debt/life/earnings/research-trigger fields move behind auth. The probe
+        must never leak economic state.
+        """
         from fastapi.testclient import TestClient
 
         import main as main_mod
@@ -325,16 +330,22 @@ class TestHealthEndpoint:
         client = TestClient(test_app)
         resp = client.get("/health")
         assert resp.status_code == 200
-        body = resp.json()
-        assert body["status"] == "alive"
-        assert body["life"] == 1
-        assert body["debt"] == "0.00"
+        assert resp.json() == {"status": "ok"}
 
-        # Tick the loop and confirm /health reflects the new state
+        # Tick the loop — the probe stays bare even as the agent's state moves.
         loop.debt_tick()
         resp2 = client.get("/health")
         assert resp2.status_code == 200
-        assert resp2.json()["debt"] == "0.50"
+        body = resp2.json()
+        assert body == {"status": "ok"}
+        for secret_field in (
+            "debt",
+            "life",
+            "survival_state",
+            "last_earnings",
+            "next_research_trigger",
+        ):
+            assert secret_field not in body
 
         # Clean up: don't leak the module-level loop
         main_mod._loop = None
@@ -472,7 +483,11 @@ class TestPersistenceFallback:
 # ---------------------------------------------------------------------------
 
 class TestStatusEndpoint:
-    """The /status endpoint must return the full state."""
+    """The /status endpoint must return the full state — but only to
+    authenticated callers (issue #74)."""
+
+    #: Tests run with API_AUTH_TOKEN=test-token (set in tests/conftest.py).
+    _AUTH = {"Authorization": "Bearer test-token"}
 
     def test_status_returns_200_and_keys(self):
         from fastapi.testclient import TestClient
@@ -491,7 +506,7 @@ class TestStatusEndpoint:
         main_mod._loop = loop
 
         client = TestClient(test_app)
-        resp = client.get("/status")
+        resp = client.get("/status", headers=self._AUTH)
         
         assert resp.status_code == 200
         body = resp.json()
@@ -508,9 +523,32 @@ class TestStatusEndpoint:
 
         # Test initialising behavior
         main_mod._loop = None
-        resp_503 = client.get("/status")
+        resp_503 = client.get("/status", headers=self._AUTH)
         assert resp_503.status_code == 503
         assert resp_503.json()["detail"] == "initialising"
+
+    def test_status_rejects_unauthenticated(self):
+        """Without credentials /status must be refused — the dashboard prompts
+        for auth instead (issue #74)."""
+        from fastapi.testclient import TestClient
+
+        import main as main_mod
+
+        @main_mod.asynccontextmanager
+        async def _noop_lifespan(app):
+            yield
+
+        test_app = main_mod.FastAPI(title="test", lifespan=_noop_lifespan)
+        test_app.router.routes.extend(main_mod.app.router.routes)
+
+        store = InMemoryStore()
+        loop = main_mod.SurvivalLoop(persistence=store)
+        main_mod._loop = loop
+
+        client = TestClient(test_app)
+        assert client.get("/status").status_code == 401
+        assert client.get("/status", headers={"Authorization": "Bearer wrong"}).status_code == 403
+        main_mod._loop = None
 
 
 # ---------------------------------------------------------------------------
@@ -741,7 +779,8 @@ class TestWebSocketBroadcast:
             while not server.started:
                 await asyncio.sleep(0.01)
             port = server.servers[0].sockets[0].getsockname()[1]
-            uri = f"ws://127.0.0.1:{port}/ws"
+            # Issue #74: the live feed is gated — connect with a valid token.
+            uri = f"ws://127.0.0.1:{port}/ws?token=test-token"
 
             for _ in range(200):
                 if holder.get("loop") is not None:
