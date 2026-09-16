@@ -8,7 +8,7 @@
 
 ## Subtasks
 
-- [ ] 1. Add `last_research_at` persistence + dedup guard to PersistenceStore (abstract + InMemory + Supabase)
+- [x] 1. Add `last_research_at` persistence + dedup guard to PersistenceStore (abstract + InMemory + Supabase)
 - [ ] 2. Add dedup guard to `scripts/research_trigger.py` (check `last_research_at` before firing)
 - [ ] 3. Add dedup guard to `main.py` `research_trigger` + `_trigger_research` wrapper
 - [ ] 4. Add dedup guard to `/api/research/trigger` endpoint
