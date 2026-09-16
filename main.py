@@ -529,7 +529,26 @@ class SurvivalLoop:
         return self.debt_engine.tick_now()
 
     async def research_trigger(self) -> None:
-        """Run the research cycle asynchronously."""
+        """Run the research cycle asynchronously.
+
+        Deduplication: checks ``last_research_at`` in persistence before
+        firing — if GH Actions cron or another in-app run already completed
+        a cycle within the last 6 hours, this invocation is skipped.
+        """
+        from datetime import timedelta as _td
+
+        _DEDUP_WINDOW = _td(hours=6)
+        last_at = self.persistence.load_last_research_at()
+        if last_at is not None:
+            now = datetime.now(timezone.utc)
+            if (now - last_at) < _DEDUP_WINDOW:
+                logger.info(
+                    "Research cycle skipped — last run at %s (within %s dedup window)",
+                    last_at.isoformat(),
+                    _DEDUP_WINDOW,
+                )
+                return
+
         try:
             logger.info("Research cycle starting")
             results = await self.research.research_earning_platforms()
@@ -551,6 +570,7 @@ class SurvivalLoop:
                         "summary": r.summary,
                     },
                 )
+            self.persistence.save_last_research_at(datetime.now(timezone.utc))
             self._persist_all()
             if self.ws_manager:
                 status = self.get_status()
