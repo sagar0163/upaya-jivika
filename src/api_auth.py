@@ -53,7 +53,7 @@ def require_api_token(request: Request) -> None:
 def extract_presented_token(carrier: Any) -> str | None:
     """Return the token presented on a request or WebSocket handshake.
 
-    ``carrier`` can be a starlette ``Request`` or`` WebSocket`` — both expose
+    ``carrier`` can be a starlette ``Request`` or ``WebSocket`` — both expose
     ``.headers``, ``.cookies`` and ``.query_params``. The token is accepted
     from (in priority order):
 

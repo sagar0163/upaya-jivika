@@ -22,7 +22,6 @@ from fastapi.testclient import TestClient
 import main as main_mod
 from src.persistence import InMemoryStore
 
-
 #: conftest.py sets API_AUTH_TOKEN=test-token for every test.
 _TOKEN = "test-token"
 _AUTH = {"Authorization": f"Bearer {_TOKEN}"}
