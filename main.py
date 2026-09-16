@@ -595,26 +595,42 @@ class SurvivalLoop:
     async def research_trigger(self) -> None:
         """Run the research cycle asynchronously.
 
-        Deduplication: checks ``last_research_at`` in persistence before
-        firing — if GH Actions cron or another in-app run already completed
-        a cycle within the last 6 hours, this invocation is skipped.
+        Deduplication (issue #71): uses both a fast timestamp check
+        (``last_research_at``) and an atomic window claim
+        (``try_claim_research_window``) so exactly one full cycle fires per
+        6-hour window whether the trigger is the in-app APScheduler, GH
+        Actions cron, or the API endpoint.
         """
         from datetime import timedelta as _td
 
-        _DEDUP_WINDOW = _td(hours=6)
+        from src.persistence import RESEARCH_DEDUP_WINDOW_HOURS, research_window_id
+
+        now = datetime.now(timezone.utc)
+
+        # Fast path: timestamp check avoids a DB round-trip when the last
+        # run is clearly still inside the 6 h dedup window.
         last_at = self.persistence.load_last_research_at()
-        if last_at is not None:
-            now = datetime.now(timezone.utc)
-            if (now - last_at) < _DEDUP_WINDOW:
-                logger.info(
-                    "Research cycle skipped — last run at %s (within %s dedup window)",
-                    last_at.isoformat(),
-                    _DEDUP_WINDOW,
-                )
-                return
+        if last_at is not None and (now - last_at) < _td(hours=RESEARCH_DEDUP_WINDOW_HOURS):
+            logger.info(
+                "Research cycle skipped — last run at %s (within %sh dedup window)",
+                last_at.isoformat(),
+                RESEARCH_DEDUP_WINDOW_HOURS,
+            )
+            return
+
+        # Atomic claim: prevents two concurrent runners (app scheduler + GH
+        # cron firing in the same minute) from both starting a full cycle on
+        # the same 6 h bucket.
+        win_id = research_window_id(now)
+        if not self.persistence.try_claim_research_window(win_id):
+            logger.info(
+                "Research cycle skipped — window %s already claimed by concurrent runner",
+                win_id,
+            )
+            return
 
         try:
-            logger.info("Research cycle starting")
+            logger.info("Research cycle starting (window=%s)", win_id)
             results = await self.research.research_earning_platforms()
             persisted = persist_research_scores(results, self.persistence)
             logger.info(

@@ -16,34 +16,48 @@ from datetime import datetime, timedelta, timezone
 # Add project root to path
 sys.path.insert(0, '.')
 
-from src.persistence import create_persistence_store
+from src.persistence import (
+    RESEARCH_DEDUP_WINDOW_HOURS,
+    create_persistence_store,
+    research_window_id,
+)
 from src.research_loop import ResearchAgent, persist_research_scores
 
 # How long since the last research cycle before we allow another run.
-DEDUP_WINDOW = timedelta(hours=6)
+DEDUP_WINDOW = timedelta(hours=RESEARCH_DEDUP_WINDOW_HOURS)
 
 
 async def main() -> int:
     """Run a single research cycle."""
     store = create_persistence_store()
 
+    now = datetime.now(timezone.utc)
+
     # Deduplicate against the in-app APScheduler job (and other cron runs).
     # Only one runner may fire per 6 h window to avoid double-charging
     # free-tier API costs and racing on the event-log load-modify-write.
     last_at = store.load_last_research_at()
-    if last_at is not None:
-        now = datetime.now(timezone.utc)
-        if (now - last_at) < DEDUP_WINDOW:
-            print(
-                f"Skipping — research cycle already ran at "
-                f"{last_at.isoformat()} (within {DEDUP_WINDOW} dedup window)"
-            )
-            return 0
+    if last_at is not None and (now - last_at) < DEDUP_WINDOW:
+        print(
+            f"Skipping — research cycle already ran at "
+            f"{last_at.isoformat()} (within {DEDUP_WINDOW} dedup window)"
+        )
+        return 0
+
+    # Atomic claim: even if the in-app scheduler checks in within the same
+    # minute (both read a stale last_research_at), only one runner claims
+    # the current 6 h bucket and fires the full cycle.
+    win_id = research_window_id(now)
+    if not store.try_claim_research_window(win_id):
+        print(
+            f"Skipping — research window {win_id} already claimed by another runner"
+        )
+        return 0
 
     agent = ResearchAgent()
 
     try:
-        print("Research cycle starting...")
+        print(f"Research cycle starting... (window={win_id})")
         results = await agent.research_earning_platforms()
 
         # Persist platform certainties / task affinities so the TaskScorer's
