@@ -32,7 +32,12 @@ from fastapi.responses import FileResponse
 
 from src.alert_system import AlertLevel, AlertSystem
 from src.ancestral_memory import AncestralMemory, load_ancestral_memory
-from src.api_auth import SESSION_COOKIE, require_api_token
+from src.api_auth import (
+    SESSION_COOKIE,
+    require_api_token,
+    require_manual_confirm_token,
+    require_withdrawal_token,
+)
 from src.approval_gate import ApprovalGate, SpendDecision
 from src.audit_trail import AuditTrail
 from src.captcha_handler import BotDetectionTracker
@@ -1351,7 +1356,7 @@ async def payoneer_webhook(request: Request):
             await asyncio.sleep(1)
 
 
-@app.post("/api/webhooks/payoneer/manual", dependencies=[Depends(require_api_token)])
+@app.post("/api/webhooks/payoneer/manual", dependencies=[Depends(require_manual_confirm_token)])
 async def manual_payoneer_confirmation(request: Request):
     """Fallback manual confirmation API path for when the Payoneer webhook fails.
 
@@ -1419,7 +1424,7 @@ async def reject_spend_endpoint(spend_id: str):
     return {"rejected": True, "spend_id": spend_id}
 
 
-@app.post("/api/withdraw", dependencies=[Depends(require_api_token)])
+@app.post("/api/withdraw", dependencies=[Depends(require_withdrawal_token)])
 async def withdraw_endpoint(request: Request):
     """User-initiated withdrawal from a wallet pool to a real bank account.
 

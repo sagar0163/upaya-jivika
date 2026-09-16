@@ -11,8 +11,10 @@ is rejected rather than silently accepted.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import os
+import time
 
 from fastapi import HTTPException, Request
 
@@ -25,28 +27,59 @@ _BEARER_PREFIX = "Bearer "
 #: browser storage — the cookie is invisible to page script either way.
 SESSION_COOKIE = "uj_session"
 
+# Rate limiting for auth failures
+_failed_attempts: dict[str, list[float]] = {}
+_MAX_FAILURES = 5
+_FAILURE_WINDOW = 60 # seconds
 
-def require_api_token(request: Request) -> None:
-    """FastAPI dependency: reject the request unless it carries a valid token.
+def _check_rate_limit(request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    
+    attempts = _failed_attempts.get(client_ip, [])
+    attempts = [t for t in attempts if now - t < _FAILURE_WINDOW]
+    _failed_attempts[client_ip] = attempts
+    
+    if len(attempts) >= _MAX_FAILURES:
+        raise HTTPException(status_code=429, detail="Too many failed authentication attempts")
 
-    Raises 503 if ``API_AUTH_TOKEN`` isn't configured (fail closed — a
-    forgotten secret must not silently open every write endpoint), 401 if
-    the caller didn't present a token, and 403 if it doesn't match. Accepts
-    the token either as an ``Authorization: Bearer`` header (for direct API
-    callers) or as the ``uj_session`` cookie set by ``POST /api/session``
-    (used by the dashboard, which never handles the raw token in JS after
-    the initial login prompt).
-    """
-    token = os.environ.get("API_AUTH_TOKEN")
+def _record_failed_attempt(request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    
+    attempts = _failed_attempts.get(client_ip, [])
+    attempts.append(now)
+    _failed_attempts[client_ip] = attempts
+
+async def _verify_token(request: Request, env_var_name: str) -> None:
+    _check_rate_limit(request)
+    
+    token = os.environ.get(env_var_name)
     if not token:
-        raise HTTPException(status_code=503, detail="API authentication not configured")
+        raise HTTPException(status_code=503, detail=f"{env_var_name} not configured")
+
+    if len(token) < 16:
+        raise HTTPException(status_code=503, detail=f"{env_var_name} is too weak (min 16 chars)")
 
     presented = _extract_presented_token(request)
     if presented is None:
+        _record_failed_attempt(request)
         raise HTTPException(status_code=401, detail="Missing bearer token")
 
     if not hmac.compare_digest(presented, token):
+        _record_failed_attempt(request)
+        await asyncio.sleep(0.5) # auth-failure backoff
         raise HTTPException(status_code=403, detail="Invalid API token")
+
+
+async def require_api_token(request: Request) -> None:
+    await _verify_token(request, "API_AUTH_TOKEN")
+
+async def require_manual_confirm_token(request: Request) -> None:
+    await _verify_token(request, "PAYONEER_TX_TOKEN")
+
+async def require_withdrawal_token(request: Request) -> None:
+    await _verify_token(request, "WITHDRAWAL_TOKEN")
 
 
 def _extract_presented_token(request: Request) -> str | None:
