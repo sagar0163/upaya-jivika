@@ -64,6 +64,7 @@ class AuditTrail:
 
     KIND_SCORE = "task_scored"
     KIND_EXECUTE = "task_executed"
+    KIND_DELEGATE = "delegation"
 
     def __init__(self) -> None:
         self._entries: list[AuditEntry] = []
@@ -155,6 +156,53 @@ class AuditTrail:
                 "amount_earned": str(amount_earned),
                 "time_spent_hours": str(time_spent_hours),
                 "error": error or "",
+            },
+            survival_state=survival_state,
+            debt=debt,
+        )
+
+    def record_delegation(
+        self,
+        *,
+        commitment_id: str,
+        source_task_id: str,
+        task_title: str,
+        action: str,
+        escrow_amount: Decimal,
+        status: str,
+        deadline: datetime,
+        verification: str = "",
+        survival_state: str = "",
+        debt: Optional[Decimal] = None,
+    ) -> AuditEntry:
+        """Record a human-delegation escrow decision (issue #76).
+
+        ``action`` is one of ``created | pending_veto | delivered | released |
+        refunded`` — every escrow transition is on the record.
+        """
+        return self.record(
+            actor="delegation_hub",
+            kind=self.KIND_DELEGATE,
+            summary=(
+                f"Delegation {action}: '{task_title}' escrow ${escrow_amount} "
+                f"(status={status})"
+            ),
+            reasoning=[
+                f"commitment_id={commitment_id}",
+                f"source_task_id={source_task_id}",
+                f"deadline={deadline.isoformat()}",
+                f"verification={verification[:80] or 'none'}",
+            ],
+            inputs={
+                "commitment_id": commitment_id,
+                "source_task_id": source_task_id,
+                "task": task_title,
+                "action": action,
+            },
+            outcome={
+                "escrow_amount": str(escrow_amount),
+                "status": status,
+                "deadline": deadline.isoformat(),
             },
             survival_state=survival_state,
             debt=debt,

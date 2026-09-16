@@ -455,6 +455,10 @@
             <div class="wallet-label">Current Debt</div>
             <div class="wallet-value debt mono" id="walletDebt">$0.00</div>
           </div>
+          <div class="wallet-item" style="grid-column: span 2;">
+            <div class="wallet-label">Escrow Held <span id="delegationCount" class="mode-status" style="font-size:0.6rem;"></span></div>
+            <div class="wallet-value mono" id="walletEscrow" style="color: var(--fg);">$0.00</div>
+          </div>
         </div>
       </div>
 
@@ -624,6 +628,8 @@
       walletLocked: document.getElementById('walletLocked'),
       walletFree: document.getElementById('walletFree'),
       walletDebt: document.getElementById('walletDebt'),
+      walletEscrow: document.getElementById('walletEscrow'),
+      delegationCount: document.getElementById('delegationCount'),
       totalEarned: document.getElementById('totalEarned'),
       eventList: document.getElementById('eventList'),
       deathOverlay: document.getElementById('deathOverlay'),
@@ -774,6 +780,12 @@
       if (s.wallet_locked !== undefined) els.walletLocked.textContent = fmtMoney(s.wallet_locked);
       if (s.wallet_free !== undefined) els.walletFree.textContent = fmtMoney(s.wallet_free);
       if (s.wallet_debt !== undefined) els.walletDebt.textContent = fmtMoney(s.wallet_debt);
+      if (s.wallet_escrow !== undefined) els.walletEscrow.textContent = fmtMoney(s.wallet_escrow);
+      const d = s.delegations;
+      if (d !== undefined) {
+        els.delegationCount.textContent =
+          '(' + d.active_count + ' active human delegation' + (d.active_count === 1 ? '' : 's') + ')';
+      }
 
       // Total earned
       if (s.total_earned !== undefined) els.totalEarned.textContent = fmtMoney(s.total_earned);
