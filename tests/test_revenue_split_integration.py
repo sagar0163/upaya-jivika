@@ -2,8 +2,6 @@
 
 from decimal import Decimal
 
-import pytest
-
 from src.persistence import InMemoryStore
 from src.wallet import Wallet
 
@@ -103,7 +101,6 @@ class TestPayoutsEndpoint:
         assert resp.json()["seed_capital_repaid"] == "0.00"
 
     def test_trigger_below_minimum_returns_not_triggered(self, monkeypatch):
-        import main as main_mod
         store = InMemoryStore()
         client, loop, _store = _client_with_loop(store)
         loop.wallet = Wallet(free=Decimal("0"), owner_owed=Decimal("0"))
@@ -135,7 +132,6 @@ class TestStatusPayload:
 class TestRecordPaymentSplitIntegration:
     def test_payment_confirmed_applies_split(self, monkeypatch):
         """record_payment must split free-pool earnings per the policy."""
-        import main as main_mod
         from src.payoneer_webhook import PayoneerWebhookEvent
 
         store = InMemoryStore()
@@ -174,7 +170,6 @@ class TestRecordPaymentSplitIntegration:
 
     def test_payment_confirmed_with_debt_repayment_skips_split_of_lock(self, monkeypatch):
         """Debt repayment to locked pool is not revenue — no split on it."""
-        import main as main_mod
         from src.payoneer_webhook import PayoneerWebhookEvent
 
         store = InMemoryStore()
@@ -206,7 +201,6 @@ class TestRecordPaymentSplitIntegration:
 class TestOwnerPayoutIntegration:
     def test_owner_payout_via_trigger(self, monkeypatch):
         """check_owner_payout: above minimum + enabled -> recorded payout."""
-        import main as main_mod
 
         store = InMemoryStore()
         client, loop, _store = _client_with_loop(store)
@@ -243,7 +237,6 @@ class TestOwnerPayoutIntegration:
 
     def test_owner_payout_idempotent_via_repeated_trigger(self, monkeypatch):
         """Repeated check_owner_payout within cadence does not double-pay."""
-        import main as main_mod
 
         store = InMemoryStore()
         client, loop, _store = _client_with_loop(store)

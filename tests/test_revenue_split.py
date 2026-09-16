@@ -4,8 +4,6 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.revenue_split import (
     PayoutRecord,
     RevenueSplitEngine,
@@ -15,7 +13,6 @@ from src.revenue_split import (
 )
 from src.wallet import Wallet
 from src.withdrawal import PayoutStatus, WithdrawalPool
-
 
 # ---------------------------------------------------------------------------
 # Policy / tier resolution
@@ -297,8 +294,7 @@ class TestCheckAutoPayout:
 
     def test_roundtrip_with_process_withdrawal(self, monkeypatch):
         """End-to-end: process_withdrawal properly handles OWNER_OWED pool."""
-        from src.withdrawal import process_withdrawal
-        from src.withdrawal import PayoutStatus
+        from src.withdrawal import PayoutStatus, process_withdrawal
 
         monkeypatch.delenv("PAYONEER_API_KEY", raising=False)
         monkeypatch.delenv("PAYONEER_PROGRAM_ID", raising=False)
