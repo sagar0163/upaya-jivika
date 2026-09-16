@@ -34,6 +34,7 @@ PAYOUT_API_URL = "https://api.payoneer.com/v4/programs/payouts"
 class WithdrawalPool(str, Enum):
     FREE = "free"
     LOCKED = "locked"
+    OWNER_OWED = "owner_owed"
 
 
 class WithdrawalError(Exception):
@@ -140,6 +141,8 @@ def process_withdrawal(
         wallet.user_withdraw_free(amount)
     elif pool is WithdrawalPool.LOCKED:
         wallet.user_withdraw_locked(amount)
+    elif pool is WithdrawalPool.OWNER_OWED:
+        wallet.user_withdraw_owner_owed(amount)
     else:  # pragma: no cover - exhaustive enum
         raise WithdrawalError(f"Unknown pool: {pool}")
 

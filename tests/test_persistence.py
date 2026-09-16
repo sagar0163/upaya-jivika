@@ -51,11 +51,12 @@ class TestWalletSerialization:
     def test_roundtrip(self):
         w = Wallet(locked=Decimal("10.00"), free=Decimal("5.50"), debt=Decimal("2.00"))
         d = _wallet_to_dict(w)
-        assert d == {"locked": "10.00", "free": "5.50", "debt": "2.00"}
+        assert d == {"locked": "10.00", "free": "5.50", "debt": "2.00", "owner_owed": "0.00"}
         restored = _wallet_from_dict(d, Wallet)
         assert restored.locked == Decimal("10.00")
         assert restored.free == Decimal("5.50")
         assert restored.debt == Decimal("2.00")
+        assert restored.owner_owed == Decimal("0.00")
 
 
 class TestWalletSerialisationRobustness:

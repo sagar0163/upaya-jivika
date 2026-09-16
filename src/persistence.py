@@ -53,6 +53,7 @@ def _wallet_to_dict(wallet: Any) -> dict[str, str]:
         "locked": str(wallet.locked),
         "free": str(wallet.free),
         "debt": str(wallet.debt),
+        "owner_owed": str(getattr(wallet, "owner_owed", "0")),
     }
 
 
@@ -61,6 +62,7 @@ def _wallet_from_dict(d: dict[str, Any], wallet_cls: Any) -> Any:
         locked=Decimal(d["locked"]),
         free=Decimal(d["free"]),
         debt=Decimal(d["debt"]),
+        owner_owed=Decimal(d.get("owner_owed", "0")),
     )
 
 
@@ -354,6 +356,22 @@ class PersistenceStore(ABC):
     def delete_pending_spend(self, spend_id: str) -> None:
         """Remove a pending spend once it's been resolved (approved/rejected)."""
 
+    @abstractmethod
+    def save_revenue_split_policy(self, policy: dict[str, Any]) -> None:
+        """Persist the revenue split policy (issue #75)."""
+
+    @abstractmethod
+    def load_revenue_split_policy(self) -> Optional[dict[str, Any]]:
+        """Load the revenue split policy, or None if never set."""
+
+    @abstractmethod
+    def save_payout_record(self, record: dict[str, Any]) -> None:
+        """Record an owner payout (issue #75 audit trail)."""
+
+    @abstractmethod
+    def load_payout_records(self) -> list[dict[str, Any]]:
+        """Load all owner payout records."""
+
 
 # ---------------------------------------------------------------------------
 # In-memory fallback
@@ -375,6 +393,8 @@ class InMemoryStore(PersistenceStore):
         self._blocked_platforms: dict[str, dict[str, Any]] = {}
         self._scammed_platforms: dict[str, dict[str, Any]] = {}
         self._pending_spends: dict[str, dict[str, Any]] = {}
+        self._revenue_split_policy: dict[str, Any] | None = None
+        self._payout_records: list[dict[str, Any]] = []
 
     def save_debt_state(self, state: DebtState) -> None:
         self._debt_state = _debt_state_to_dict(state)
@@ -466,6 +486,20 @@ class InMemoryStore(PersistenceStore):
 
     def delete_pending_spend(self, spend_id: str) -> None:
         self._pending_spends.pop(spend_id, None)
+
+    # -- revenue split policy (issue #75) -----------------------------------
+
+    def save_revenue_split_policy(self, policy: dict[str, Any]) -> None:
+        self._revenue_split_policy = dict(policy)
+
+    def load_revenue_split_policy(self) -> Optional[dict[str, Any]]:
+        return self._revenue_split_policy
+
+    def save_payout_record(self, record: dict[str, Any]) -> None:
+        self._payout_records.append(dict(record))
+
+    def load_payout_records(self) -> list[dict[str, Any]]:
+        return list(self._payout_records)
 
     # -- research_scores (issue #60: research → execution → feedback) ---------
 
@@ -565,6 +599,11 @@ class SupabaseStore(PersistenceStore):
         );
         CREATE TABLE IF NOT EXISTS research_scores (
             id    BIGSERIAL PRIMARY KEY,
+            data  JSONB NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS owner_payouts (
+            id    TEXT PRIMARY KEY,
             data  JSONB NOT NULL,
             created_at TIMESTAMPTZ DEFAULT now()
         );
@@ -743,6 +782,20 @@ class SupabaseStore(PersistenceStore):
 
     def delete_pending_spend(self, spend_id: str) -> None:
         self._client.table("pending_spends").delete().eq("id", spend_id).execute()
+
+    # -- revenue split policy (issue #75) -----------------------------------
+
+    def save_revenue_split_policy(self, policy: dict[str, Any]) -> None:
+        self._upsert_row("app_settings", "revenue_split_policy", policy)
+
+    def load_revenue_split_policy(self) -> Optional[dict[str, Any]]:
+        return self._load_row("app_settings", "revenue_split_policy")
+
+    def save_payout_record(self, record: dict[str, Any]) -> None:
+        self._upsert_row("owner_payouts", record["payout_id"], record)
+
+    def load_payout_records(self) -> list[dict[str, Any]]:
+        return self._load_all("owner_payouts")
 
 
 # ---------------------------------------------------------------------------

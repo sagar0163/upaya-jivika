@@ -50,6 +50,11 @@ from src.payoneer_webhook import (
 from src.persistence import PersistenceStore, create_persistence_store
 from src.research_loop import ResearchAgent, persist_research_scores
 from src.respawn_policy import RespawnPolicyEngine
+from src.revenue_split import (
+    PayoutRecord,
+    RevenueSplitEngine,
+    RevenueSplitPolicy,
+)
 from src.scam_detection import ScamEvent, ScamTracker, ScamType
 from src.soul_crystal import (
     LifeRecord,
@@ -149,6 +154,11 @@ class SurvivalLoop:
         self.approval_gate = ApprovalGate(self.persistence)
         self.bot_tracker = BotDetectionTracker(self.persistence)
         self.audit_trail = AuditTrail()
+
+        # Issue #75 revenue split policy (owner / reinvest / reserve) — loaded
+        # from persistence so the operator's thresholds survive restarts.
+        self._load_revenue_split_policy()
+        self.revenue_split = RevenueSplitEngine(policy=self.revenue_split_policy)
         self.task_executor = TaskExecutor(
             wallet=self.wallet,
             vault=get_vault(),
@@ -270,6 +280,7 @@ class SurvivalLoop:
                 locked=Decimal(wallet_data["locked"]),
                 free=Decimal(wallet_data["free"]),
                 debt=Decimal(wallet_data["debt"]),
+                owner_owed=Decimal(wallet_data.get("owner_owed", "0")),
             )
             logger.info("Restored wallet: $%s total", self.wallet.total_balance)
 
@@ -314,6 +325,81 @@ class SurvivalLoop:
         if self._life_record:
             self.persistence.save_life_record(self._life_record)
         self.persistence.save_events(self._event_log)
+
+    # -- revenue split policy (issue #75) -----------------------------------
+
+    def _load_revenue_split_policy(self) -> None:
+        """Load the persisted revenue split policy, or seed the default."""
+        raw = self.persistence.load_revenue_split_policy()
+        if raw is None:
+            self.revenue_split_policy = RevenueSplitPolicy()
+        else:
+            try:
+                self.revenue_split_policy = RevenueSplitPolicy.model_validate(raw)
+            except Exception:
+                logger.exception("Invalid persisted revenue split policy — falling back to default")
+                self.revenue_split_policy = RevenueSplitPolicy()
+
+    def save_revenue_split_policy(self) -> dict[str, Any]:
+        """Persist the current policy and refresh the engine reference."""
+        payload = self.revenue_split_policy.model_dump()
+        self.persistence.save_revenue_split_policy(payload)
+        self.revenue_split = RevenueSplitEngine(policy=self.revenue_split_policy)
+        self._broadcast_event("revenue_split_policy")
+        return payload
+
+    def set_revenue_split_policy(self, policy: RevenueSplitPolicy) -> dict[str, Any]:
+        """Replace (validate) and persist the revenue split policy."""
+        policy.tiers = sorted(policy.tiers, key=lambda t: t.min_balance)
+        self.revenue_split_policy = policy
+        return self.save_revenue_split_policy()
+
+    def get_payout_records(self) -> list[PayoutRecord]:
+        """Load owner payout history from persistence."""
+        raw = self.persistence.load_payout_records()
+        records: list[PayoutRecord] = []
+        for d in raw:
+            try:
+                records.append(PayoutRecord.model_validate(d))
+            except Exception:
+                logger.exception("Skipping malformed payout record: %s", d)
+        return records
+
+    def check_owner_payout(self) -> PayoutRecord | None:
+        """Attempt a scheduled owner auto-payout (issue #75).
+
+        Idempotent via ``check_auto_payout``'s cadence gate — calling this
+        frequently is safe, it only fires once the minimum balance AND the
+        cadence window have both been reached.
+        """
+        record = self.revenue_split.check_auto_payout(
+            wallet=self.wallet,
+            payout_history=self.get_payout_records(),
+        )
+        if record is None:
+            return None
+
+        self.persistence.save_payout_record(record.to_dict())
+        # Policy seed-capital tracker may have advanced — persist it.
+        self.save_revenue_split_policy()
+        self._event_log.append(
+            f"Owner auto-payout: ${record.amount} "
+            f"(id={record.payout_id}, completed={record.completed})"
+        )
+        if record.completed:
+            self._event_log.append(
+                f"Seed repayment progress: ${self.revenue_split_policy.seed_capital_repaid}"
+            )
+            self.cold_archive.append_event("owner_payout", record.to_dict())
+            self._persist_all()
+            self._broadcast_event("owner_payout")
+        logger.info(
+            "Owner payout attempted: id=%s amount=$%s completed=%s",
+            record.payout_id,
+            record.amount,
+            record.completed,
+        )
+        return record
 
     # -- callbacks ----------------------------------------------------------
 
@@ -622,6 +708,12 @@ class SurvivalLoop:
             self.check_scam_windows()
         except Exception:
             logger.exception("check_scam_windows failed — will retry next tick")
+        # Issue #75: owner auto-payout, gated by the policy's minimum + cadence.
+        # Safe to run every tick — check_auto_payout is idempotent.
+        try:
+            self.check_owner_payout()
+        except Exception:
+            logger.exception("check_owner_payout failed — will retry next tick")
 
     def record_task_outcome(
         self,
@@ -685,6 +777,15 @@ class SurvivalLoop:
             return {"processed": False, "reason": "duplicate", "payment_id": event.payment_id}
 
         breakdown = self.wallet.credit_earned(event.amount)
+
+        # Issue #75: split new free-pool earnings into owner/reinvest/reserve
+        # per the current policy tier. Owner share is earmarked for scheduled
+        # payout; reinvest stays in free (subject to ai_spend/approval_gate);
+        # reserve moves to the locked pool floor.
+        split: dict[str, Decimal] | None = None
+        if breakdown["to_free"] > 0:
+            split = self.revenue_split.apply_split(breakdown["to_free"], self.wallet)
+
         self.persistence.mark_payment_processed(
             event.payment_id,
             {
@@ -693,22 +794,28 @@ class SurvivalLoop:
                 "status": event.status.value,
                 "debt_repaid": str(breakdown["debt_repaid"]),
                 "to_free": str(breakdown["to_free"]),
+                "split": {k: str(v) for k, v in split.items()} if split else None,
             },
         )
         self._event_log.append(
             f"Payment confirmed: {event.payment_id} ${event.amount} "
             f"(debt_repaid=${breakdown['debt_repaid']}, to_free=${breakdown['to_free']})"
         )
-        self.cold_archive.append_event(
-            "payment_confirmed",
-            {
-                "payment_id": event.payment_id,
-                "amount": str(event.amount),
-                "currency": event.currency,
-                "debt_repaid": str(breakdown["debt_repaid"]),
-                "to_free": str(breakdown["to_free"]),
-            },
-        )
+        if split:
+            self._event_log.append(
+                f"Revenue split: owner=${split['owner']} reinvest=${split['reinvest']} "
+                f"reserve=${split['reserve']}"
+            )
+        cold_entry: dict[str, Any] = {
+            "payment_id": event.payment_id,
+            "amount": str(event.amount),
+            "currency": event.currency,
+            "debt_repaid": str(breakdown["debt_repaid"]),
+            "to_free": str(breakdown["to_free"]),
+        }
+        if split:
+            cold_entry["split"] = {k: str(v) for k, v in split.items()}
+        self.cold_archive.append_event("payment_confirmed", cold_entry)
         self._persist_all()
         self._broadcast_event("payment_confirmed")
         logger.info(
@@ -735,6 +842,7 @@ class SurvivalLoop:
             "amount": str(event.amount),
             "debt_repaid": str(breakdown["debt_repaid"]),
             "to_free": str(breakdown["to_free"]),
+            "split": {k: str(v) for k, v in split.items()} if split else None,
         }
 
     # -- scam handling (§20) -------------------------------------------------
@@ -1078,6 +1186,7 @@ class SurvivalLoop:
             "wallet_locked": str(self.wallet.locked),
             "wallet_free": str(self.wallet.free),
             "wallet_debt": str(self.wallet.debt),
+            "wallet_owner_owed": str(self.wallet.owner_owed),
             "total_earned": (
                 str(self._life_record.total_earned) if self._life_record else "0"
             ),
@@ -1089,6 +1198,33 @@ class SurvivalLoop:
                 "platforms": sorted(carried_platforms),
                 "task_types": sorted(carried_tasks),
             },
+            "revenue_split": self.get_revenue_split_status(),
+        }
+
+    def get_revenue_split_status(self) -> dict[str, Any]:
+        """Return the current revenue-split policy snapshot for status payloads."""
+        policy = self.revenue_split_policy
+        return {
+            "policy": {
+                "tiers": [
+                    {
+                        "min_balance": str(t.min_balance),
+                        "fractions": {
+                            "owner": str(t.fractions.owner),
+                            "reinvest": str(t.fractions.reinvest),
+                            "reserve": str(t.fractions.reserve),
+                        },
+                    }
+                    for t in policy.tiers
+                ],
+                "auto_payout_enabled": policy.auto_payout_enabled,
+                "auto_payout_minimum": str(policy.auto_payout_minimum),
+                "auto_payout_cadence_hours": policy.auto_payout_cadence_hours,
+                "seed_capital_repaid": str(policy.seed_capital_repaid),
+            },
+            "active_tier": self.revenue_split.get_current_tier(self.wallet.free),
+            "owner_owed": str(self.wallet.owner_owed),
+            "payout_count": len(self.get_payout_records()),
         }
 
 
@@ -1520,3 +1656,82 @@ async def set_survival_mode_endpoint(request: Request) -> dict[str, Any]:
 
     loop.set_survival_mode(enabled)
     return {"enabled": loop._survival_mode, "persisted": True}
+
+
+# ---------------------------------------------------------------------------
+# Issue #75 — owner payout scheduling & revenue-split policy
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/revenue-split/policy", dependencies=[Depends(require_api_token)])
+async def get_revenue_split_policy_endpoint() -> dict[str, Any]:
+    """Return the current revenue-split policy (tiers + payout config)."""
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+    return loop.revenue_split_policy.model_dump()
+
+
+@app.post("/api/revenue-split/policy", dependencies=[Depends(require_api_token)])
+async def set_revenue_split_policy_endpoint(request: Request) -> dict[str, Any]:
+    """Set the revenue-split policy (issue #75).
+
+    Body is a full ``RevenueSplitPolicy`` JSON::
+
+        {
+          "tiers": [
+            {"min_balance": "0", "fractions": {"owner": "0", "reinvest": "1", "reserve": "0"}},
+            {"min_balance": "50", "fractions": {"owner": "0.1", "reinvest": "0.8", "reserve": "0.1"}},
+            {"min_balance": "200", "fractions": {"owner": "0.3", "reinvest": "0.5", "reserve": "0.2"}}
+          ],
+          "auto_payout_enabled": true,
+          "auto_payout_minimum": "10.00",
+          "auto_payout_cadence_hours": 24,
+          "seed_capital_repaid": "0.00"
+        }
+
+    The policy is validated (fractions ≤ 1, tiers sorted) and persisted.
+    """
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Malformed JSON body") from exc
+
+    try:
+        policy = RevenueSplitPolicy.model_validate(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid policy: {exc}") from exc
+
+    returned = loop.set_revenue_split_policy(policy)
+    loop._event_log.append("Revenue split policy updated by operator")
+    loop._persist_all()
+    return returned
+
+
+@app.get("/api/revenue-split/payouts", dependencies=[Depends(require_api_token)])
+async def owner_payout_history_endpoint() -> dict[str, Any]:
+    """Return owner auto-payout history (audit trail)."""
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+    records = [r.to_dict() for r in loop.get_payout_records()]
+    return {
+        "payouts": records,
+        "seed_capital_repaid": str(loop.revenue_split_policy.seed_capital_repaid),
+    }
+
+
+@app.post("/api/revenue-split/payouts/trigger", dependencies=[Depends(require_api_token)])
+async def trigger_owner_payout_endpoint() -> dict[str, Any]:
+    """Manually attempt an owner auto-payout now (still min/cadence-gated)."""
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+    record = loop.check_owner_payout()
+    if record is None:
+        return {"triggered": False, "reason": "below minimum or within cadence window"}
+    return {"triggered": True, **record.to_dict()}

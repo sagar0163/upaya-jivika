@@ -33,11 +33,16 @@ class Wallet(BaseModel):
     The locked pool is *logically* immutable from the AI side — no public
     method exposes a way to debit it.  The user can withdraw via
     ``user_withdraw_locked``.
+
+    ``owner_owed`` accumulates the owner's revenue share for scheduled
+    payout (issue #75).  It is not part of ``free`` or ``locked`` — it
+    is earmarked money that will be paid out via the auto-payout scheduler.
     """
 
     locked: Decimal = Field(default=Decimal("0.00"), ge=0)
     free: Decimal = Field(default=Decimal("0.00"), ge=0)
     debt: Decimal = Field(default=Decimal("0.00"), ge=0)
+    owner_owed: Decimal = Field(default=Decimal("0.00"), ge=0)
 
     # -- helpers -----------------------------------------------------------
 
@@ -105,6 +110,22 @@ class Wallet(BaseModel):
         if amt > self.locked:
             raise WalletError("Insufficient locked pool balance")
         self.locked -= amt
+        return amt
+
+    def user_withdraw_owner_owed(self, amount: float | Decimal) -> Decimal:
+        """Withdraw from the owner's earmarked revenue share (issue #75).
+
+        Unlike the free/locked pools, ``owner_owed`` is money already set
+        aside for the owner during revenue-split; it was removed from ``free``
+        when the split was applied, so this never touches the AI's reinvest
+        capital. Only the owner's auto-payout scheduler calls this.
+        """
+        amt = self._dec(amount)
+        if amt <= 0:
+            raise WalletError("Withdrawal amount must be positive")
+        if amt > self.owner_owed:
+            raise WalletError("Insufficient owner_owed balance")
+        self.owner_owed -= amt
         return amt
 
     # -- AI spend (restricted) ---------------------------------------------
