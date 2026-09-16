@@ -60,14 +60,25 @@ class AuditTrail:
     dicts via :meth:`to_dicts`.  The store is intentionally simple: callers
     that need durable persistence (e.g. Supabase / GitHub diary) can consume
     :meth:`to_dicts` and write them to Layer 1/2/3 storage (artifact.md §10).
+
+    Bounded in memory (issue #71): once :attr:`max_entries` is exceeded the
+    oldest entries are handed to the ``on_overflow`` callback (by default a
+    caller-supplied sink that rolls them into the cold archive) and pruned,
+    so a long-lived agent never accumulates an unbounded Python list.
     """
 
     KIND_SCORE = "task_scored"
     KIND_EXECUTE = "task_executed"
     KIND_DELEGATE = "delegation"
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        max_entries: int = 500,
+        on_overflow: Optional[callable] = None,
+    ) -> None:
         self._entries: list[AuditEntry] = []
+        self._max_entries = max_entries
+        self._on_overflow = on_overflow
 
     def record(
         self,
@@ -81,7 +92,12 @@ class AuditTrail:
         survival_state: str = "",
         debt: Optional[Decimal] = None,
     ) -> AuditEntry:
-        """Append and return a new audit entry."""
+        """Append and return a new audit entry.
+
+        Bounded in memory (issue #71): appending past ``max_entries`` rolls
+        the oldest entries into the ``on_overflow`` consumer (e.g. the cold
+        archive) and prunes them from hot memory.
+        """
         entry = AuditEntry(
             actor=actor,
             kind=kind,
@@ -93,7 +109,22 @@ class AuditTrail:
             debt=str(debt) if debt is not None else "0.00",
         )
         self._entries.append(entry)
+        self._trim()
         return entry
+
+    def _trim(self) -> None:
+        """Roll overflow entries out of memory via the overflow consumer."""
+        if self._max_entries is None or len(self._entries) <= self._max_entries:
+            return
+        overflow = self._entries[: (len(self._entries) - self._max_entries)]
+        del self._entries[: (len(self._entries) - self._max_entries)]
+        if self._on_overflow is not None:
+            try:
+                self._on_overflow(overflow)
+            except Exception:
+                # Overflow archival must never crash the decision path.
+                logger = __import__("logging").getLogger(__name__)
+                logger.exception("Audit trail overflow consumer failed")
 
     # -- convenience helpers for the established decision points -------------
 

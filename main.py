@@ -73,6 +73,12 @@ EARNING_PLATFORMS = [EarningPlatform.CLICKWORKER]
 
 logger = logging.getLogger(__name__)
 
+#: Bounded in-memory event log (issue #71). Once exceeded, the oldest
+#: events are rolled into the cold archive and dropped from hot memory so a
+#: long-lived life does not accumulate an unbounded Python list that is
+#: re-persisted wholesale on every mutation.
+EVENT_LOG_MAX = 500
+
 
 # ---------------------------------------------------------------------------
 # WebSocket Manager
@@ -150,7 +156,12 @@ class SurvivalLoop:
         self.email_inbox = EmailInboxClient()
         self.approval_gate = ApprovalGate(self.persistence)
         self.bot_tracker = BotDetectionTracker(self.persistence)
-        self.audit_trail = AuditTrail()
+        self.audit_trail = AuditTrail(
+            on_overflow=lambda overflow: self.cold_archive.append_event(
+                "audit_trail_rollover",
+                {"entries": [e.model_dump() for e in overflow]},
+            )
+        )
         self.task_executor = TaskExecutor(
             wallet=self.wallet,
             vault=get_vault(),
@@ -249,8 +260,18 @@ class SurvivalLoop:
                     pass
 
     def _log_event(self, msg: str) -> None:
-        """Append to the in-memory event log and mark dirty for persistence."""
+        """Append to the in-memory event log and mark dirty for persistence.
+
+        Bounded in memory (issue #71): once :data:`EVENT_LOG_MAX` is
+        exceeded, the oldest events are rolled into the Layer 3 cold archive
+        and dropped from hot memory instead of ballooning without limit.
+        """
         self._event_log.append(msg)
+        if len(self._event_log) > EVENT_LOG_MAX:
+            overflow = self._event_log[: (len(self._event_log) - EVENT_LOG_MAX)]
+            del self._event_log[: (len(self._event_log) - EVENT_LOG_MAX)]
+            self.cold_archive.append_event("event_log_rollover", {"events": overflow})
+            logger.debug("Rolled %d event(s) into cold archive", len(overflow))
         self._dirty["events"] = True
 
     # -- persistence --------------------------------------------------------
