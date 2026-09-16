@@ -76,15 +76,26 @@ class TestScanEmailForPaymentAlerts:
 
 
 class TestEmailEndpoints:
+    #: Tests run with API_AUTH_TOKEN=test-token (set in tests/conftest.py).
+    _AUTH = {"Authorization": "Bearer test-token"}
+
     def test_status_endpoint_reports_unconfigured(self, monkeypatch):
         for var in ("EMAIL_IMAP_HOST", "EMAIL_IMAP_USER", "EMAIL_IMAP_PASSWORD"):
             monkeypatch.delenv(var, raising=False)
         client, _loop, _store = _client_with_loop()
 
-        resp = client.get("/api/email/status")
+        resp = client.get("/api/email/status", headers=self._AUTH)
 
         assert resp.status_code == 200
         assert resp.json() == {"configured": False}
+
+    def test_status_endpoint_requires_auth(self):
+        """Revealing inbox configuration enables call-and-response fishing —
+        gate it (issue #74)."""
+        client, _loop, _store = _client_with_loop()
+
+        assert client.get("/api/email/status").status_code == 401
+        assert client.get("/api/email/status", headers={"Authorization": "Bearer wrong"}).status_code == 403
 
     def test_scan_endpoint_returns_alerts(self):
         client, loop, _store = _client_with_loop()
@@ -93,7 +104,7 @@ class TestEmailEndpoints:
         mock_inbox.fetch_unread.return_value = [alert]
         loop.email_inbox = mock_inbox
 
-        resp = client.post("/api/email/scan", headers={"Authorization": "Bearer test-token"})
+        resp = client.post("/api/email/scan", headers=self._AUTH)
 
         assert resp.status_code == 200
         assert resp.json()["alerts_found"] == [{"sender": "alerts@payoneer.com", "subject": "Payout sent"}]
@@ -105,7 +116,7 @@ class TestEmailEndpoints:
         from fastapi.testclient import TestClient
 
         client = TestClient(main_mod.app)
-        resp = client.get("/api/email/status")
+        resp = client.get("/api/email/status", headers=self._AUTH)
 
         assert resp.status_code == 503
 
@@ -116,6 +127,6 @@ class TestEmailEndpoints:
         from fastapi.testclient import TestClient
 
         client = TestClient(main_mod.app)
-        resp = client.post("/api/email/scan", headers={"Authorization": "Bearer test-token"})
+        resp = client.post("/api/email/scan", headers=self._AUTH)
 
         assert resp.status_code == 503

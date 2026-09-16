@@ -111,15 +111,27 @@ class TestResolvePendingSpends:
 
 
 class TestSpendEndpoints:
+    #: Tests run with API_AUTH_TOKEN=test-token (set in tests/conftest.py).
+    _AUTH = {"Authorization": "Bearer test-token"}
+
     def test_pending_endpoint_lists_requests(self):
         client, loop, _store = _client_with_loop()
         loop.wallet = Wallet(free=Decimal("100.00"))
         loop.request_ai_spend(Decimal("5.00"), Decimal("0.97"), "reason")
 
-        resp = client.get("/api/spend/pending")
+        resp = client.get("/api/spend/pending", headers=self._AUTH)
 
         assert resp.status_code == 200
         assert len(resp.json()["pending"]) == 1
+
+    def test_pending_endpoint_requires_auth(self):
+        """Pending spends include the AI's reasons — gate the list (issue #74)."""
+        client, loop, _store = _client_with_loop()
+        loop.wallet = Wallet(free=Decimal("100.00"))
+        loop.request_ai_spend(Decimal("5.00"), Decimal("0.97"), "secret strategy")
+
+        assert client.get("/api/spend/pending").status_code == 401
+        assert client.get("/api/spend/pending", headers={"Authorization": "Bearer wrong"}).status_code == 403
 
     def test_reject_endpoint_success(self):
         client, loop, _store = _client_with_loop()
@@ -128,7 +140,7 @@ class TestSpendEndpoints:
 
         resp = client.post(
             f"/api/spend/{result['spend_id']}/reject",
-            headers={"Authorization": "Bearer test-token"},
+            headers=self._AUTH,
         )
 
         assert resp.status_code == 200
@@ -139,7 +151,7 @@ class TestSpendEndpoints:
 
         resp = client.post(
             "/api/spend/nonexistent/reject",
-            headers={"Authorization": "Bearer test-token"},
+            headers=self._AUTH,
         )
 
         assert resp.status_code == 404
@@ -152,6 +164,6 @@ class TestSpendEndpoints:
         main_mod._loop = None
         client = TestClient(main_mod.app)
 
-        resp = client.get("/api/spend/pending")
+        resp = client.get("/api/spend/pending", headers=self._AUTH)
 
         assert resp.status_code == 503

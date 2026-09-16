@@ -464,9 +464,20 @@ class TestSurvivalModeEndpoint:
     def test_get_returns_current_mode(self):
         loop = _fresh_loop()
         with self._client(loop) as client:
-            resp = client.get("/api/survival-mode")
+            resp = client.get("/api/survival-mode", headers=self._AUTH)
             assert resp.status_code == 200
             assert resp.json()["enabled"] is True
+
+    def test_get_requires_auth(self):
+        """Revealing survival mode to strangers is unnecessary — gate it
+        alongside the POST toggle (issue #74)."""
+        loop = _fresh_loop()
+        with self._client(loop) as client:
+            assert client.get("/api/survival-mode").status_code == 401
+            assert client.get(
+                "/api/survival-mode",
+                headers={"Authorization": "Bearer wrong"},
+            ).status_code == 403
 
     def test_post_toggles_and_persists(self):
         loop = _fresh_loop()
