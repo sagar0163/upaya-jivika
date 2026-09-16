@@ -13,8 +13,8 @@ from decimal import Decimal
 # Add project root to path
 sys.path.insert(0, '.')
 
-from src.persistence import create_persistence_store
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
+from src.persistence import create_persistence_store
 
 
 async def main() -> int:

@@ -908,6 +908,7 @@ class TaskExecutor:
         audit_trail: Optional[AuditTrail] = None,
         bot_tracker: Optional[BotDetectionTracker] = None,
         scam_tracker: Optional[ScamTracker] = None,
+        delegation: Any = None,
     ) -> None:
         self.wallet = wallet
         self.headless = headless
@@ -922,6 +923,9 @@ class TaskExecutor:
         # §20: a platform that already confirmed-scammed this agent is never
         # rejoined — checked before spending a login attempt on it.
         self.scam_tracker = scam_tracker
+        # Issue #76: when a task that is inherently human (writing/coding)
+        # fails execution, hand it to a human via escrow instead of returning $0.
+        self.delegation = delegation
         self.session_manager = BrowserSessionManager(headless=headless, storage_dir=session_dir)
         self._connectors: dict[Platform, PlatformConnector] = {}
         self._credentials: dict[Platform, dict] = {}
@@ -1275,6 +1279,33 @@ class TaskExecutor:
 
         if not scored:
             logger.info(f"No tasks pass threshold ({min_certainty})")
+            # Issue #76 — low-certainty branch: work the agent refuses (too
+            # uncertain for its own execution) may still be safe to pay a human
+            # for — a human can do open-ended writing/coding that the agent's
+            # certainty gates correctly decline. Escrow is held, never prepaid.
+            if self.delegation is not None:
+                eligible = [c for c in candidates if self.delegation.is_eligible(c)]
+                if eligible:
+                    try:
+                        target = max(eligible, key=lambda c: c.estimated_pay or 0)
+                        outcome = self.delegation.try_delegate(
+                            target,
+                            source_task_id=f"scored:{target.platform.value}",
+                            reason="low_certainty",
+                            survival_state=resolve_state(self.wallet.debt).value,
+                            debt=self.wallet.debt,
+                        )
+                        logger.info(
+                            "Delegated low-certainty task '%s' to human: "
+                            "status=%s escrow=$%s",
+                            target.title,
+                            outcome.status,
+                            outcome.escrow_amount,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Delegation attempt failed for '%s'", candidates[0].title
+                        )
             return results
 
         # 4. Execute passing tasks
@@ -1283,6 +1314,37 @@ class TaskExecutor:
 
         batch_results = await self.execute_batch(executable, certainty=min_certainty)
         results.extend(batch_results)
+
+        # Issue #76 — human-delegation fallback: a task the agent itself could
+        # not execute (failed after the batch attempt) but that is inherently
+        # human work is handed to a human via escrow rather than producing a
+        # silent $0 outcome. Funding is held, never prepaid (§20 rule 1).
+        if self.delegation is not None:
+            failed_eligible = [
+                r.candidate
+                for r in batch_results
+                if not r.success and self.delegation.is_eligible(r.candidate)
+            ]
+            for candidate in failed_eligible:
+                try:
+                    outcome = self.delegation.try_delegate(
+                        candidate,
+                        source_task_id=f"executor:{candidate.platform.value}",
+                        reason="executor_failed",
+                        survival_state=resolve_state(self.wallet.debt).value,
+                        debt=self.wallet.debt,
+                    )
+                    logger.info(
+                        "Delegated failed task '%s' to human: status=%s escrow=$%s",
+                        candidate.title,
+                        outcome.status,
+                        outcome.escrow_amount,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Delegation attempt failed for '%s' — keeping $0 outcome",
+                        candidate.title,
+                    )
 
         return results
 

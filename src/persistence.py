@@ -53,14 +53,18 @@ def _wallet_to_dict(wallet: Any) -> dict[str, str]:
         "locked": str(wallet.locked),
         "free": str(wallet.free),
         "debt": str(wallet.debt),
+        "escrow": str(getattr(wallet, "escrow", Decimal("0.00"))),
     }
 
 
 def _wallet_from_dict(d: dict[str, Any], wallet_cls: Any) -> Any:
+    # ``escrow`` is optional so legacy snapshots (pre-#76) still restore; the
+    # escrow pool simply defaults to zero when it was never persisted.
     return wallet_cls(
         locked=Decimal(d["locked"]),
         free=Decimal(d["free"]),
         debt=Decimal(d["debt"]),
+        escrow=Decimal(d.get("escrow", "0.00")),
     )
 
 
@@ -354,6 +358,16 @@ class PersistenceStore(ABC):
     def delete_pending_spend(self, spend_id: str) -> None:
         """Remove a pending spend once it's been resolved (approved/rejected)."""
 
+    # -- delegations (§14/§20 — human delegation escrow ledger, life-scoped)-
+
+    @abstractmethod
+    def save_commitment(self, commitment_id: str, data: dict[str, Any]) -> None:
+        """Save/update a human-delegation commitment (issue #76)."""
+
+    @abstractmethod
+    def load_commitments(self) -> list[dict[str, Any]]:
+        """Load all human-delegation commitments from the escrow ledger."""
+
 
 # ---------------------------------------------------------------------------
 # In-memory fallback
@@ -375,6 +389,7 @@ class InMemoryStore(PersistenceStore):
         self._blocked_platforms: dict[str, dict[str, Any]] = {}
         self._scammed_platforms: dict[str, dict[str, Any]] = {}
         self._pending_spends: dict[str, dict[str, Any]] = {}
+        self._commitments: dict[str, dict[str, Any]] = {}
 
     def save_debt_state(self, state: DebtState) -> None:
         self._debt_state = _debt_state_to_dict(state)
@@ -429,6 +444,9 @@ class InMemoryStore(PersistenceStore):
         # Pending spends are life-scoped (tied to a wallet that's about to
         # reset) — a dying life's undecided spend decisions don't carry over.
         self._pending_spends.clear()
+        # Delegation commitments are life-scoped for the same reason: their
+        # escrow lives in the wallet that is being wiped.
+        self._commitments.clear()
 
     def is_payment_processed(self, payment_id: str) -> bool:
         return payment_id in self._processed_payments
@@ -466,6 +484,14 @@ class InMemoryStore(PersistenceStore):
 
     def delete_pending_spend(self, spend_id: str) -> None:
         self._pending_spends.pop(spend_id, None)
+
+    # -- delegations (issue #76: human-delegation escrow ledger) ------------
+
+    def save_commitment(self, commitment_id: str, data: dict[str, Any]) -> None:
+        self._commitments[commitment_id] = dict(data)
+
+    def load_commitments(self) -> list[dict[str, Any]]:
+        return list(self._commitments.values())
 
     # -- research_scores (issue #60: research → execution → feedback) ---------
 
@@ -555,6 +581,11 @@ class SupabaseStore(PersistenceStore):
             created_at TIMESTAMPTZ DEFAULT now()
         );
         CREATE TABLE IF NOT EXISTS pending_spends (
+            id    TEXT PRIMARY KEY,
+            data  JSONB NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS commitments (
             id    TEXT PRIMARY KEY,
             data  JSONB NOT NULL,
             created_at TIMESTAMPTZ DEFAULT now()
@@ -690,6 +721,9 @@ class SupabaseStore(PersistenceStore):
         # Pending spends are life-scoped (tied to a wallet that's about to
         # reset) — a dying life's undecided spend decisions don't carry over.
         self._delete_all("pending_spends")
+        # Delegation commitments are life-scoped for the same reason: their
+        # escrow lives in the wallet that is being wiped (issue #76).
+        self._delete_all("commitments")
 
     # -- processed_payments (§20 payment audit trail — permanent) -----------
 
@@ -743,6 +777,14 @@ class SupabaseStore(PersistenceStore):
 
     def delete_pending_spend(self, spend_id: str) -> None:
         self._client.table("pending_spends").delete().eq("id", spend_id).execute()
+
+    # -- commitments (issue #76: human-delegation escrow ledger) ------------
+
+    def save_commitment(self, commitment_id: str, data: dict[str, Any]) -> None:
+        self._upsert_row("commitments", commitment_id, data)
+
+    def load_commitments(self) -> list[dict[str, Any]]:
+        return self._load_all("commitments")
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,7 @@ from src.audit_trail import AuditTrail
 from src.captcha_handler import BotDetectionTracker
 from src.cold_archive import ColdArchive
 from src.debt_engine import DebtEngine, DebtState, DifficultyMode
+from src.delegation import DelegationError, DelegationHub
 from src.diary import DiaryWriter
 from src.email_inbox import EmailInboxClient, is_payment_alert
 from src.payoneer_webhook import (
@@ -50,7 +51,7 @@ from src.payoneer_webhook import (
 from src.persistence import PersistenceStore, create_persistence_store
 from src.research_loop import ResearchAgent, persist_research_scores
 from src.respawn_policy import RespawnPolicyEngine
-from src.scam_detection import ScamEvent, ScamTracker, ScamType
+from src.scam_detection import ScamEvent, ScamPreventionError, ScamTracker, ScamType
 from src.soul_crystal import (
     LifeRecord,
     ReincarnationEngine,
@@ -59,6 +60,7 @@ from src.soul_crystal import (
 from src.state_machine import SurvivalStateMachine, min_certainty
 from src.task_executor import TaskExecutor
 from src.task_scorer import Platform as EarningPlatform
+from src.task_scorer import TaskCandidate
 from src.vault import assert_vault_security_ready, get_vault
 from src.wallet import SpendRequest, Wallet, WalletError
 from src.withdrawal import WithdrawalError, WithdrawalPool, process_withdrawal
@@ -156,6 +158,17 @@ class SurvivalLoop:
             bot_tracker=self.bot_tracker,
             audit_trail=self.audit_trail,
         )
+        # Issue #76: human delegation with escrow. Funded through ai_spend +
+        # approval_gate, released only on verified delivery, refunded on expiry.
+        self.delegation = DelegationHub(
+            wallet=self.wallet,
+            approval_gate=self.approval_gate,
+            persistence=self.persistence,
+            audit_trail=self.audit_trail,
+            cold_archive=self.cold_archive,
+            event_sink=lambda msg: self._event_log.append(msg),
+        )
+        self.task_executor.delegation = self.delegation
 
         # Wire persistence on every debt tick
         self.debt_engine._on_tick = self._on_tick  # type: ignore[assignment]
@@ -267,11 +280,15 @@ class SurvivalLoop:
 
         if wallet_data:
             self.wallet = Wallet(
-                locked=Decimal(wallet_data["locked"]),
-                free=Decimal(wallet_data["free"]),
-                debt=Decimal(wallet_data["debt"]),
+                locked=Decimal(wallet_data.get("locked", "0")),
+                free=Decimal(wallet_data.get("free", "0")),
+                debt=Decimal(wallet_data.get("debt", "0")),
+                escrow=Decimal(wallet_data.get("escrow", "0.00")),
             )
             logger.info("Restored wallet: $%s total", self.wallet.total_balance)
+            # Escrow/delegation and task executor must see the restored wallet.
+            self.task_executor.wallet = self.wallet
+            self.delegation.wallet = self.wallet
 
         if life_record:
             self._life_record = life_record
@@ -301,6 +318,8 @@ class SurvivalLoop:
         self.debt_engine.reset_for_new_life(life_num)
         self.state_machine.reset()
         self.wallet = Wallet()
+        self.task_executor.wallet = self.wallet
+        self.delegation.wallet = self.wallet
         self._life_record = self.reincarnation.start_new_life(life_num)
         self._event_log = [f"Life {life_num} born"]
         self._persist_all()
@@ -451,6 +470,8 @@ class SurvivalLoop:
         self.debt_engine.reset_for_new_life(new_life_num)
         self.state_machine.reset()
         self.wallet = Wallet()
+        self.task_executor.wallet = self.wallet
+        self.delegation.wallet = self.wallet
         self.alerts.reset()
         self.respawn.on_reincarnate()
         self._life_record = self.reincarnation.start_new_life(new_life_num)
@@ -622,6 +643,22 @@ class SurvivalLoop:
             self.check_scam_windows()
         except Exception:
             logger.exception("check_scam_windows failed — will retry next tick")
+        # Issue #76: refund any delegation escrow whose deadline lapsed without
+        # verified delivery (auto-refunds back to the free pool).
+        try:
+            refunds = self.delegation.expire_delegations(
+                survival_state=self.state_machine.state.value,
+                debt=self.wallet.debt,
+            )
+            for refund in refunds:
+                self._event_log.append(
+                    f"Delegation {refund['commitment_id']} expired — "
+                    f"${refund['escrow_refunded']} refunded to free pool"
+                )
+            if refunds:
+                self._persist_all()
+        except Exception:
+            logger.exception("Delegation expiry failed — will retry next tick")
 
     def record_task_outcome(
         self,
@@ -950,6 +987,18 @@ class SurvivalLoop:
                     debited = self.wallet.ai_spend(SpendRequest(amount=pending.amount, certainty=pending.certainty))
                     entry["amount"] = str(debited)
                     self._event_log.append(f"AI spend auto-approved after veto window: ${debited} — {pending.reason}")
+                    # Issue #76: if this spend funds a delegation commitment,
+                    # re-tag the debit as escrow-held (not spent).
+                    if self.delegation.finalize_pending_funding(
+                        pending.spend_id,
+                        debited,
+                        survival_state=self.state_machine.state.value,
+                        debt=self.wallet.debt,
+                    ):
+                        entry["escrow_held"] = str(debited)
+                        self._event_log.append(
+                            f"Delegation {pending.spend_id}: ${debited} escrow held after veto approval"
+                        )
                 except WalletError as exc:
                     entry["error"] = str(exc)
                     self._event_log.append(f"AI spend {pending.spend_id} auto-approval failed: {exc}")
@@ -961,6 +1010,55 @@ class SurvivalLoop:
             self._persist_all()
             self._broadcast_event("spend_requests_resolved")
         return results
+
+    # -- delegation (§76) ---------------------------------------------------
+
+    def delegate_human_task(
+        self,
+        candidate: TaskCandidate,
+        source_task_id: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Ask a human to take a task the agent could not execute itself.
+
+        Money only ever moves INTO escrow here (held, not spent) — release
+        happens exclusively on verified delivery via ``release_delegation``.
+        """
+        result = self.delegation.try_delegate(
+            candidate,
+            source_task_id=source_task_id,
+            reason=reason,
+            survival_state=self.state_machine.state.value,
+            debt=self.wallet.debt,
+        )
+        self._persist_all()
+        self._broadcast_event("delegation_created")
+        return result.model_dump()
+
+    def release_delegation(self, commitment_id: str, verification: str) -> dict[str, Any]:
+        """Release escrow to a human — ONLY on verified delivery (§20 rule 1).
+
+        Raising without ``verification`` is a prepayment; the hard rule in
+        ``scam_detection.enforce_no_upfront_payment`` refuses it.
+        """
+        amount = self.delegation.release_to_human(
+            commitment_id,
+            verification=verification if verification else "",
+        )
+        self._persist_all()
+        self._broadcast_event("escrow_released")
+        return {"released": True, "commitment_id": commitment_id, "amount": str(amount)}
+
+    def expire_delegations(self) -> list[dict[str, Any]]:
+        """Manually run the delegation-expiry sweep (also runs each tick)."""
+        refunds = self.delegation.expire_delegations(
+            survival_state=self.state_machine.state.value,
+            debt=self.wallet.debt,
+        )
+        if refunds:
+            self._persist_all()
+            self._broadcast_event("delegation_expired")
+        return refunds
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -1078,6 +1176,14 @@ class SurvivalLoop:
             "wallet_locked": str(self.wallet.locked),
             "wallet_free": str(self.wallet.free),
             "wallet_debt": str(self.wallet.debt),
+            "wallet_escrow": str(self.wallet.escrow),
+            "delegations": {
+                "active_escrow_held": str(self.delegation.active_escrow_held()),
+                "active_count": sum(
+                    1 for c in self.delegation.list_commitments() if c.is_active()
+                ),
+                "total_count": len(self.delegation.list_commitments()),
+            },
             "total_earned": (
                 str(self._life_record.total_earned) if self._life_record else "0"
             ),
@@ -1445,6 +1551,51 @@ async def reject_spend_endpoint(spend_id: str):
     if not rejected:
         raise HTTPException(status_code=404, detail="No pending (unexpired) spend with that id")
     return {"rejected": True, "spend_id": spend_id}
+
+
+@app.get("/api/delegation/commitments")
+async def delegation_commitments_endpoint():
+    """List every human-delegation commitment (escrow ledger)."""
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+    return {"commitments": loop.delegation.to_dicts()}
+
+
+@app.post(
+    "/api/delegation/{commitment_id}/release",
+    dependencies=[Depends(require_api_token)],
+)
+async def delegation_release_endpoint(commitment_id: str, request: Request):
+    """Release escrow to a human on VERIFIED delivery (§20 rule 1).
+
+    Body: ``{"verification": "evidence of delivered/work" }``. Empty or
+    missing verification is refused — the no-upfront-payment hard rule is
+    absolute, so this endpoint cannot prepay a human.
+    """
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Malformed JSON body") from exc
+    verification = (payload or {}).get("verification", "")
+
+    try:
+        return loop.release_delegation(commitment_id, verification)
+    except (DelegationError, ScamPreventionError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/delegation/expire", dependencies=[Depends(require_api_token)])
+async def delegation_expire_endpoint():
+    """Run the delegation-expiry sweep now (also runs on every survival tick)."""
+    loop = _loop
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Survival loop not initialised")
+    return {"refunds": loop.expire_delegations()}
 
 
 @app.post("/api/withdraw", dependencies=[Depends(require_api_token)])

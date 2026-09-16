@@ -33,11 +33,17 @@ class Wallet(BaseModel):
     The locked pool is *logically* immutable from the AI side — no public
     method exposes a way to debit it.  The user can withdraw via
     ``user_withdraw_locked``.
+
+    ``escrow`` is a third, AI-reserved pool (issue #76): money the AI has
+    already spent *permission-wise* through ``ai_spend`` but is holding for a
+    human delegation instead of consuming. It is released to the human on
+    verified delivery, or refunded to ``free`` when the deadline expires.
     """
 
     locked: Decimal = Field(default=Decimal("0.00"), ge=0)
     free: Decimal = Field(default=Decimal("0.00"), ge=0)
     debt: Decimal = Field(default=Decimal("0.00"), ge=0)
+    escrow: Decimal = Field(default=Decimal("0.00"), ge=0)
 
     # -- helpers -----------------------------------------------------------
 
@@ -148,11 +154,61 @@ class Wallet(BaseModel):
         self.free -= request.amount
         return request.amount
 
+    # -- escrow (issue #76: human delegation hold) --------------------------
+
+    def hold_escrow(self, amount: float | Decimal) -> Decimal:
+        """Earmark ``amount`` — already debited from ``free`` by ``ai_spend`` —
+        as escrow-held for a human delegation.
+
+        ``ai_spend`` remains the gate/permission layer (debt threshold,
+        certainty gate, free-pool fraction); this call only re-tags the
+        accounting of that debit from "consumed" to "held in escrow", so the
+        money is neither lost nor re-spendable.  It is refunded back to
+        ``free`` on deadline expiry (``escrow_refund``) or released out of
+        the wallet on verified delivery (``escrow_release``).
+        """
+        amt = self._dec(amount)
+        if amt <= 0:
+            raise WalletError("Escrow amount must be positive")
+        self.escrow += amt
+        return amt
+
+    def escrow_release(self, amount: float | Decimal) -> Decimal:
+        """Release escrow to the human — the *only* outward money movement of
+        a delegation, and only ever called after verified delivery.
+
+        Pulls the amount out of the escrow pool entirely (it leaves the
+        wallet). No path exists to release before verification: the
+        delegation layer enforces that (§20 no-upfront-payment hard rule).
+        """
+        amt = self._dec(amount)
+        if amt <= 0:
+            raise WalletError("Escrow amount must be positive")
+        if amt > self.escrow:
+            raise WalletError("Insufficient escrow pool balance")
+        self.escrow -= amt
+        return amt
+
+    def escrow_refund(self, amount: float | Decimal) -> Decimal:
+        """Refund escrow back to the free pool (deadline expiry / cancellation).
+
+        The money was permission-gated by ``ai_spend`` but never consumed —
+        returning it to ``free`` makes it AI-investable again.
+        """
+        amt = self._dec(amount)
+        if amt <= 0:
+            raise WalletError("Escrow amount must be positive")
+        if amt > self.escrow:
+            raise WalletError("Insufficient escrow pool balance")
+        self.escrow -= amt
+        self.free += amt
+        return amt
+
     # -- properties --------------------------------------------------------
 
     @property
     def total_balance(self) -> Decimal:
-        return self.locked + self.free
+        return self.locked + self.free + self.escrow
 
     @property
     def net_worth(self) -> Decimal:
