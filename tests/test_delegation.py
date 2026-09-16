@@ -27,8 +27,7 @@ from src.delegation import (
 from src.persistence import InMemoryStore
 from src.scam_detection import ScamPreventionError
 from src.task_executor import TaskExecutor
-from src.task_scorer import PaymentMethod, TaskCandidate, TaskResult, TaskType
-from src.task_scorer import Platform
+from src.task_scorer import PaymentMethod, Platform, TaskCandidate, TaskResult, TaskType
 from src.wallet import SpendRequest, Wallet
 
 
