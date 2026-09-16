@@ -72,9 +72,9 @@ services:
       - key: ANTICAPTCHA_API_KEY
         sync: false
       # Encrypts platform passwords at rest in the Supabase `credentials`
-      # table (src/vault.py). Soft-configured: unset means passwords are
-      # stored in plaintext (loudly logged) rather than the vault failing —
-      # but this MUST be set for real platform credentials to be protected
-      # against a Supabase read-access leak.
+      # table (src/vault.py). REQUIRED for the live vault (issue #72):
+      # the app refuses to boot if this is unset (fail-closed). Without it
+      # the entire credential store — the agent's revenue asset — would sit
+      # in plaintext, exposed by any Supabase read-access leak.
       - key: VAULT_ENCRYPTION_KEY
         sync: false

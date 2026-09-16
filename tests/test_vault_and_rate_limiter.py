@@ -396,13 +396,18 @@ class TestSupabaseSecretStoreEncryptionAtRest:
     external service.
     """
 
-    def _store_with_mock_client(self, monkeypatch, mock_client, *, encryption_key="s3cr3t-key"):
-        from src.vault import SupabaseSecretStore
+    def _store_with_mock_client(self, monkeypatch, mock_client, *, encryption_key="s3cr3t-key", allow_plaintext=False):
+        from src.vault import ALLOW_PLAINTEXT_ENV, SupabaseSecretStore
 
         if encryption_key is not None:
             monkeypatch.setenv("VAULT_ENCRYPTION_KEY", encryption_key)
         else:
             monkeypatch.delenv("VAULT_ENCRYPTION_KEY", raising=False)
+
+        if allow_plaintext:
+            monkeypatch.setenv(ALLOW_PLAINTEXT_ENV, "1")
+        else:
+            monkeypatch.delenv(ALLOW_PLAINTEXT_ENV, raising=False)
 
         store = SupabaseSecretStore.__new__(SupabaseSecretStore)
         store._client = mock_client
@@ -454,11 +459,31 @@ class TestSupabaseSecretStoreEncryptionAtRest:
 
         assert store.get("clickworker") == "old-plaintext-password"
 
-    def test_no_encryption_key_stores_plaintext_with_warning(self, monkeypatch, caplog):
+    def test_no_encryption_key_raises_by_default(self, monkeypatch):
+        """Fail closed (issue #72): without VAULT_ENCRYPTION_KEY the store must
+        refuse to write plaintext — silently recording a live platform password
+        in cleartext is indefensible."""
         from unittest.mock import MagicMock
+
+        from src.vault import PlaintextVaultError
 
         mock_client = MagicMock()
         store = self._store_with_mock_client(monkeypatch, mock_client, encryption_key=None)
+
+        with pytest.raises(PlaintextVaultError):
+            store.set("clickworker", "my-real-password")
+
+        mock_client.table.return_value.upsert.assert_not_called()
+
+    def test_no_encryption_key_plaintext_ok_with_allow_flag(self, monkeypatch, caplog):
+        """Plaintext survives only behind the explicit ALLOW_PLAINTEXT_VAULT=1
+        opt-in (local/CI path), and still logs a loud warning."""
+        from unittest.mock import MagicMock
+
+        mock_client = MagicMock()
+        store = self._store_with_mock_client(
+            monkeypatch, mock_client, encryption_key=None, allow_plaintext=True
+        )
 
         store.set("clickworker", "my-real-password")
 
@@ -483,6 +508,131 @@ class TestSupabaseSecretStoreEncryptionAtRest:
         monkeypatch.delenv("VAULT_ENCRYPTION_KEY", raising=False)
 
         assert store.get("clickworker") is None
+
+
+# ============================================================================
+# vault.py — fail-closed startup check + migration (issue #72)
+# ============================================================================
+
+class TestFailClosedVaultStartup:
+    """Tests for assert_vault_security_ready() and the plaintext migration."""
+
+    def test_passes_when_key_configured(self, monkeypatch):
+        from src.vault import assert_vault_security_ready
+
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("VAULT_ENCRYPTION_KEY", "some-key")
+        assert_vault_security_ready()
+
+    def test_noop_when_not_production(self, monkeypatch):
+        from src.vault import assert_vault_security_ready
+
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        monkeypatch.delenv("VAULT_ENCRYPTION_KEY", raising=False)
+        assert_vault_security_ready()
+
+    def test_raises_in_production_without_key(self, monkeypatch):
+        from src.vault import PlaintextVaultError, assert_vault_security_ready
+
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.delenv("VAULT_ENCRYPTION_KEY", raising=False)
+        monkeypatch.delenv("ALLOW_PLAINTEXT_VAULT", raising=False)
+
+        with pytest.raises(PlaintextVaultError):
+            assert_vault_security_ready()
+
+    def test_allow_plaintext_flag_downgrades_to_warning(self, monkeypatch, caplog):
+        from src.vault import assert_vault_security_ready
+
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.delenv("VAULT_ENCRYPTION_KEY", raising=False)
+        monkeypatch.setenv("ALLOW_PLAINTEXT_VAULT", "1")
+
+        assert_vault_security_ready()
+        assert "plaintext" in caplog.text.lower()
+
+
+class TestVaultPlaintextMigration:
+    """Tests for scripts/migrate_plaintext_vault.py's core migration logic."""
+
+    def _make_fernet(self, monkeypatch):
+        from src.vault import _get_fernet
+
+        monkeypatch.setenv("VAULT_ENCRYPTION_KEY", "migration-key")
+        return _get_fernet()
+
+    def test_migrates_plaintext_rows_and_skips_encrypted(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from scripts.migrate_plaintext_vault import migrate_plaintext_rows
+
+        mock_client = MagicMock()
+        mock_client.table.return_value.select.return_value.execute.return_value.data = [
+            {"provider": "clickworker", "key": "password", "value": "plain-pw-1"},
+            {"provider": "toloka", "key": "password", "value": "plain-pw-2"},
+            {"provider": "done", "key": "password", "value": "enc:v1:already-encrypted"},
+        ]
+
+        fernet = self._make_fernet(monkeypatch)
+        counts = migrate_plaintext_rows(mock_client, fernet)
+
+        assert counts == {"total": 3, "already_encrypted": 1, "migrated": 2}
+
+        upserts = mock_client.table.return_value.upsert.call_args_list
+        assert len(upserts) == 2
+        for call in upserts:
+            stored = call.args[0]["value"]
+            assert stored.startswith("enc:v1:")
+            assert stored != "enc:v1:already-encrypted"
+
+    def test_roundtrip_decrypts_migrated_value(self, monkeypatch):
+        """A value migrated by the script must decrypt back to the original
+        plaintext via the vault (acceptance: lookups keep returning the same
+        values after migration)."""
+        from unittest.mock import MagicMock
+
+        from scripts.migrate_plaintext_vault import migrate_plaintext_rows
+
+        original = "top-secret-password"
+        mock_client = MagicMock()
+        mock_client.table.return_value.select.return_value.execute.return_value.data = [
+            {"provider": "clickworker", "key": "password", "value": original},
+        ]
+
+        fernet = self._make_fernet(monkeypatch)
+        migrate_plaintext_rows(mock_client, fernet)
+
+        stored_value = mock_client.table.return_value.upsert.call_args.args[0]["value"]
+        decrypted = fernet.decrypt(stored_value[len("enc:v1:"):].encode()).decode()
+        assert decrypted == original
+
+    def test_dry_run_writes_nothing(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from scripts.migrate_plaintext_vault import migrate_plaintext_rows
+
+        mock_client = MagicMock()
+        mock_client.table.return_value.select.return_value.execute.return_value.data = [
+            {"provider": "clickworker", "key": "password", "value": "plain-pw"},
+        ]
+
+        fernet = self._make_fernet(monkeypatch)
+        counts = migrate_plaintext_rows(mock_client, fernet, dry_run=True)
+
+        assert counts == {"total": 1, "already_encrypted": 0, "migrated": 1}
+        mock_client.table.return_value.upsert.assert_not_called()
+
+    def test_cli_requires_encryption_key(self, monkeypatch, capsys):
+        from scripts.migrate_plaintext_vault import main
+
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "anon-key")
+        monkeypatch.delenv("VAULT_ENCRYPTION_KEY", raising=False)
+
+        rc = main(["--dry-run"])
+
+        assert rc == 1
+        assert "VAULT_ENCRYPTION_KEY" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(

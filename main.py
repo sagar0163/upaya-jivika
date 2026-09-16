@@ -59,7 +59,7 @@ from src.soul_crystal import (
 from src.state_machine import SurvivalStateMachine, min_certainty
 from src.task_executor import TaskExecutor
 from src.task_scorer import Platform as EarningPlatform
-from src.vault import get_vault
+from src.vault import assert_vault_security_ready, get_vault
 from src.wallet import SpendRequest, Wallet, WalletError
 from src.withdrawal import WithdrawalError, WithdrawalPool, process_withdrawal
 
@@ -1106,6 +1106,11 @@ async def lifespan(app: FastAPI):
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+    # Issue #72: fail closed — a live Supabase vault must never boot without
+    # VAULT_ENCRYPTION_KEY (otherwise platform passwords would be stored in
+    # plaintext). This raises and aborts startup when it would.
+    assert_vault_security_ready()
 
     _loop = SurvivalLoop()
     _loop.start()
