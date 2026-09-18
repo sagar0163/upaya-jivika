@@ -480,7 +480,7 @@ dashboard.py         — Rich terminal UI, live status
 | ✅ | Task timeout | **SOLVED** — `asyncio.wait_for` cap in `TaskExecutor.execute_task` (default 300s); excess → failed result, $0 credit |
 | 🟡 | Scam handling | Payment-window tracking is wired end-to-end: `TaskExecutor.execute_task` calls `ScamTracker.register_task` on every successful task, `SurvivalLoop.check_scam_windows()` runs every `survival_tick` and auto-calls `record_scam` (permanent blacklist) for any window that exceeds window+grace per `PaymentWindow.is_grace_exceeded`'s own documented §20 contract, and `scan_email_for_payment_alerts` resolves outstanding windows via `ScamTracker.mark_platform_paid` when a matching payment-alert email arrives. **Still not wired**: `research_loop.py` never calls `score_legitimacy`/`legitimacy_gate` before a platform is joined — there is no research-to-`PlatformSignals` pipeline (domain age, HTTPS, Reddit presence, etc.) to feed it, so a new platform is never screened before onboarding |
 | 🟡 | Task execution engine | **Was fully dead code, now wired but inert without credentials.** `SurvivalLoop.earning_cycle()` (called every 2h by APScheduler, same pattern as the research trigger) now instantiates `TaskExecutor`/`BotDetectionTracker`/`AuditTrail`/`CredentialsVault` and calls `TaskExecutor.run_earning_cycle` (discover → score → execute → credit wallet → record outcome), which was previously built and unit-tested but never invoked from anywhere. Deliberately guarded: the cycle checks the vault for at least one configured platform credential *before* calling `TaskExecutor.start()`, because starting it launches a real headless Chromium process — with zero credentials configured today, the guard keeps this a genuine no-op (no browser, no memory cost) rather than paying that cost for nothing. **Net effect**: the mechanism is now live and will start executing real tasks the moment Clickworker/Toloka/Prolific credentials are added to the vault (Supabase `credentials` table or env), but until then the agent still earns nothing through real task execution — it only researches and manages its own wallet/debt/state. Chromium's per-instance memory footprint on Render's free-tier dyno once credentials are added is untested and worth watching |
-| ✅ | API authentication | **SOLVED** — `src/api_auth.py` (`require_api_token`): every mutating endpoint (`/api/withdraw`, `/api/spend/{id}/reject`, `/api/debt/tick`, `/api/research/trigger`, `/api/email/scan`) now requires `Authorization: Bearer <API_AUTH_TOKEN>`; fails closed (503) if the token isn't configured, same pattern as the Payoneer webhook. Read-only endpoints (dashboard, `/api/spend/pending`, `/health`) stay public by design. The dashboard's own withdraw/veto controls prompt for the token once (via `authedFetch` in `static/index.html`) and cache it in that browser's `localStorage` — it never appears in the page source |
+| ✅ | API authentication | **SOLVED** — `src/api_auth.py` (`require_api_token`): every mutating endpoint (`/api/spend/{id}/reject`, `/api/debt/tick`, `/api/research/trigger`, `/api/email/scan`, `/api/session`) now requires `Authorization: Bearer <API_AUTH_TOKEN>`; fails closed (503) if the token isn't configured, same pattern as the Payoneer webhook. Read-only endpoints (dashboard, `/api/spend/pending`, `/health`) stay public by design. The dashboard's controls prompt for the token once (via `authedFetch` in `static/index.html`) and it never appears in the page source. Money movement uses **separate credentials** (`PAYONEER_TX_TOKEN` for manual payment confirmation, `WITHDRAWAL_TOKEN` for `/api/withdraw`) so no single leaked secret can both mint wallet credit and drain it (issue #73). Failed token attempts are rate-limited per IP (429 after repeated failures) with a per-attempt backoff, and all tokens must be ≥ 16 chars |
 
 ---
 
@@ -577,6 +577,12 @@ services:
         sync: false
       - key: PAYONEER_WEBHOOK_SECRET
         sync: false
+      - key: PAYONEER_TX_TOKEN
+        sync: false
+      - key: WITHDRAWAL_TOKEN
+        sync: false
+      - key: API_AUTH_TOKEN
+        sync: false
       - key: NVIDIA_API_KEY
         sync: false
       - key: HF_TOKEN
@@ -590,7 +596,14 @@ services:
 | `SUPABASE_URL` + `SUPABASE_KEY` | ✓ | ✓ | Used by everything |
 | All AI API keys | ✓ | ✓ | brain_router + cron jobs |
 | `PAYONEER_WEBHOOK_SECRET` | ✓ | — | FastAPI webhook only |
-| `API_AUTH_TOKEN` | ✓ | — | Gates every mutating endpoint (`src/api_auth.py`) — withdraw, spend veto, manual debt/research triggers |
+| `PAYONEER_TX_TOKEN` | ✓ | — | Manual payment confirmation (`POST /api/webhooks/payoneer/manual`) — **mints wallet credit** |
+| `WITHDRAWAL_TOKEN` | ✓ | — | Withdrawals (`POST /api/withdraw`) — **moves money out** |
+| `API_AUTH_TOKEN` | ✓ | — | Gates the remaining mutating endpoints (`src/api_auth.py`) — spend veto, manual debt/research triggers, email scan, session |
+
+**No endpoint may both mint and move money under one secret** (issue #73): the
+manual-confirmation token, the withdrawal token and the general API token are
+enforced separately by `src/api_auth.py`. All three must be unique, random
+values of at least 16 characters (weaker values are rejected at request time).
 | `GITHUB_TOKEN` | — | ✓ built-in | diary_writer |
 | `HF_TOKEN` | ✓ | ✓ | hf_sync + cold_archive (Layer 3) |
 | Platform credentials | ✓ via vault | — | `credentials` table in Supabase via `src/vault.py` (auto-created, keyed by provider + key) |

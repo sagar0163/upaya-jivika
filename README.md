@@ -579,6 +579,12 @@ services:
         sync: false
       - key: PAYONEER_WEBHOOK_SECRET
         sync: false
+      - key: PAYONEER_TX_TOKEN
+        sync: false
+      - key: WITHDRAWAL_TOKEN
+        sync: false
+      - key: API_AUTH_TOKEN
+        sync: false
       - key: NVIDIA_API_KEY
         sync: false
       - key: HF_TOKEN
@@ -592,7 +598,15 @@ services:
 | `SUPABASE_URL` + `SUPABASE_KEY` | ✓ | ✓ | Used by everything |
 | All AI API keys | ✓ | ✓ | brain_router + cron jobs |
 | `PAYONEER_WEBHOOK_SECRET` | ✓ | — | FastAPI webhook only |
-| `API_AUTH_TOKEN` | ✓ | — | Gates every mutating endpoint (`src/api_auth.py`) — withdraw, spend veto, manual debt/research triggers |
+| `PAYONEER_TX_TOKEN` | ✓ | — | Manual payment confirmation (`POST /api/webhooks/payoneer/manual`) — **mints wallet credit** |
+| `WITHDRAWAL_TOKEN` | ✓ | — | Withdrawals (`POST /api/withdraw`) — **moves money out** |
+| `API_AUTH_TOKEN` | ✓ | — | Gates the remaining mutating endpoints (`src/api_auth.py`) — spend veto, manual debt/research triggers, email scan, session |
+
+**No endpoint may both mint and move money under one secret** (issue #73): the
+manual-confirmation token, the withdrawal token and the general API token are
+enforced separately by `src/api_auth.py`, so a single leaked credential can
+never both credit the wallet and drain it. All three must be unique, random
+values of at least 16 characters (weaker values are rejected at request time).
 | `GITHUB_TOKEN` | — | ✓ built-in | diary_writer |
 | `HF_TOKEN` | ✓ | ✓ | hf_sync + cold_archive (Layer 3) |
 | Platform credentials | ✓ via vault | — | `credentials` table in Supabase via `src/vault.py` (auto-created, keyed by provider + key) |

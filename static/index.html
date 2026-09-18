@@ -915,21 +915,37 @@
     });
 
     // ---- Withdrawal ----
+    // Money movement is gated by its own credential (WITHDRAWAL_TOKEN, kept
+    // distinct from the dashboard API token on purpose — see issue #73), so
+    // the withdraw control prompts for it separately and sends it as a
+    // Bearer header rather than reusing the API session cookie.
     const withdrawForm = document.getElementById('withdrawForm');
     const withdrawBtn = document.getElementById('withdrawBtn');
     const withdrawStatus = document.getElementById('withdrawStatus');
+    let withdrawalToken = null;
 
     withdrawForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const pool = document.getElementById('withdrawPool').value;
       const amount = document.getElementById('withdrawAmount').value;
+      if (!withdrawalToken) {
+        withdrawalToken = window.prompt('Enter the withdrawal token (set as WITHDRAWAL_TOKEN on the server) to authorize this payout:');
+      }
+      if (!withdrawalToken) {
+        withdrawStatus.textContent = 'Cancelled — withdrawal token required';
+        withdrawStatus.className = 'withdraw-status err';
+        return;
+      }
       withdrawBtn.disabled = true;
       withdrawStatus.textContent = 'Processing…';
       withdrawStatus.className = 'withdraw-status';
       try {
         const resp = await authedFetch('/api/withdraw', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${withdrawalToken}`,
+          },
           body: JSON.stringify({ pool, amount }),
         });
         const data = await resp.json();
