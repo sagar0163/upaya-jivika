@@ -27,33 +27,58 @@ _BEARER_PREFIX = "Bearer "
 #: browser storage — the cookie is invisible to page script either way.
 SESSION_COOKIE = "uj_session"
 
-# Rate limiting for auth failures
-_failed_attempts: dict[str, list[float]] = {}
+# --- Auth-failure throttling -------------------------------------------------
+# The token guard is a plain string comparison, so an attacker who can reach
+# an endpoint could otherwise brute-force the token over the network. Throttle
+# per client IP: after ``_MAX_FAILURES`` failed attempts inside
+# ``_FAILURE_WINDOW`` seconds the IP is temporarily locked out (429), and
+# every failed comparison additionally pays a small ``_AUTH_FAILURE_BACKOFF``
+# sleep so guessing the correct token is slow even before the lockout hits.
 _MAX_FAILURES = 5
-_FAILURE_WINDOW = 60 # seconds
+_FAILURE_WINDOW = 60  # seconds
+_AUTH_FAILURE_BACKOFF = 0.5  # seconds
+#: Hard cap on the number of tracked IPs; a token-scanning botnet must not be
+#: able to balloon this dict. If it overflows, the in-memory store is reset.
+_MAX_TRACKED_IPS = 5_000
 
-def _check_rate_limit(request: Request):
-    client_ip = request.client.host if request.client else "unknown"
-    now = time.time()
-    
-    attempts = _failed_attempts.get(client_ip, [])
-    attempts = [t for t in attempts if now - t < _FAILURE_WINDOW]
-    _failed_attempts[client_ip] = attempts
-    
+_failed_attempts: dict[str, list[float]] = {}
+
+
+def _now() -> float:
+    """Wall-clock source, isolated so tests can advance a fake clock."""
+    return time.time()
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _check_rate_limit(request: Request) -> None:
+    """Raise 429 if this client IP has failed auth too many times recently."""
+    client_ip = _client_ip(request)
+    now = _now()
+    attempts = [t for t in _failed_attempts.get(client_ip, []) if now - t < _FAILURE_WINDOW]
+    if attempts:
+        _failed_attempts[client_ip] = attempts
     if len(attempts) >= _MAX_FAILURES:
         raise HTTPException(status_code=429, detail="Too many failed authentication attempts")
 
-def _record_failed_attempt(request: Request):
-    client_ip = request.client.host if request.client else "unknown"
-    now = time.time()
-    
-    attempts = _failed_attempts.get(client_ip, [])
-    attempts.append(now)
-    _failed_attempts[client_ip] = attempts
+
+def _record_failed_attempt(request: Request) -> None:
+    client_ip = _client_ip(request)
+    _failed_attempts.setdefault(client_ip, []).append(_now())
+    if len(_failed_attempts) > _MAX_TRACKED_IPS:
+        _failed_attempts.clear()
+
+
+async def _auth_failure_backoff() -> None:
+    """Per-failure delay, isolated so tests can stub the sleep to no-op."""
+    await asyncio.sleep(_AUTH_FAILURE_BACKOFF)
+
 
 async def _verify_token(request: Request, env_var_name: str) -> None:
     _check_rate_limit(request)
-    
+
     token = os.environ.get(env_var_name)
     if not token:
         raise HTTPException(status_code=503, detail=f"{env_var_name} not configured")
@@ -68,7 +93,7 @@ async def _verify_token(request: Request, env_var_name: str) -> None:
 
     if not hmac.compare_digest(presented, token):
         _record_failed_attempt(request)
-        await asyncio.sleep(0.5) # auth-failure backoff
+        await _auth_failure_backoff()
         raise HTTPException(status_code=403, detail="Invalid API token")
 
 

@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
+import time
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import Any, Optional
@@ -90,17 +92,26 @@ class PayoneerWebhookEvent(BaseModel):
         return self.status is PaymentStatus.COMPLETED
 
 
-import json
-import time
-
 _seen_nonces: dict[str, float] = {}
+
+#: Freshness window for webhook payloads (seconds). Genuine (re)deliveries
+#: arrive within seconds; anything older is treated as a replayed request and
+#: rejected even when its HMAC verifies.
+_FRESHNESS_WINDOW = 300
+#: Cap on remembered nonces before stale entries are swept.
+_NONCE_CACHE_CAP = 1000
+
 
 def verify_signature(secret: str, raw_body: bytes, signature: str) -> bool:
     """Verify an HMAC-SHA256 signature of ``raw_body`` using ``secret``.
 
     Fails closed: any empty/missing input is treated as invalid. Uses
     :func:`hmac.compare_digest` to avoid timing-attack leakage.
-    Also verifies freshness via `timestamp` and `nonce` in the JSON payload.
+
+    Replay protection: the JSON body must carry a ``timestamp`` and a
+    ``nonce``. A replay is rejected when the timestamp is outside the
+    freshness window (even with a valid HMAC) or when the nonce has already
+    been seen inside that window.
     """
     if not secret or not signature:
         return False
@@ -120,9 +131,8 @@ def verify_signature(secret: str, raw_body: bytes, signature: str) -> bool:
 
     timestamp = payload.get("timestamp")
     nonce = payload.get("nonce")
-
     if not timestamp or not nonce:
-        # Fail if timestamp/nonce are missing for strict freshness check
+        # Freshness cannot be established without both — fail closed.
         return False
 
     try:
@@ -131,21 +141,19 @@ def verify_signature(secret: str, raw_body: bytes, signature: str) -> bool:
         return False
 
     now = time.time()
-    # 5-minute freshness window (fail replayed webhooks > 5 minutes old)
-    if abs(now - ts) > 300:
+    if abs(now - ts) > _FRESHNESS_WINDOW:
         return False
 
     if nonce in _seen_nonces:
         return False
 
-    # Cleanup stale nonces
-    if len(_seen_nonces) > 1000:
-        stale = [k for k, v in _seen_nonces.items() if now - v > 300]
-        for k in stale:
-            _seen_nonces.pop(k, None)
+    # Sweep stale nonce entries once the cache grows past its cap.
+    if len(_seen_nonces) >= _NONCE_CACHE_CAP:
+        for k, v in list(_seen_nonces.items()):
+            if now - v > _FRESHNESS_WINDOW:
+                del _seen_nonces[k]
 
     _seen_nonces[nonce] = now
-
     return True
 
 

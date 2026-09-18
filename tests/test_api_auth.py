@@ -79,3 +79,61 @@ class TestRequireApiToken:
         resp = client.post("/protected", headers={"Authorization": "Bearer test-token-secure-123"})
 
         assert resp.status_code == 200
+
+
+class TestAuthFailureThrottling:
+    def _no_backoff(self, monkeypatch):
+        import src.api_auth as api_auth
+
+        async def _noop():
+            return None
+
+        monkeypatch.setattr(api_auth, "_auth_failure_backoff", _noop)
+
+    def test_weak_token_fails_closed(self, app, monkeypatch):
+        monkeypatch.setenv("API_AUTH_TOKEN", "short")
+        client = TestClient(app)
+
+        resp = client.post("/protected", headers={"Authorization": "Bearer short"})
+
+        assert resp.status_code == 503
+
+    def test_repeated_failures_lock_out_ip(self, app, monkeypatch):
+        self._no_backoff(monkeypatch)
+        client = TestClient(app)
+
+        for _ in range(5):
+            resp = client.post("/protected", headers={"Authorization": "Bearer wrong"})
+            assert resp.status_code == 403
+
+        # Even a correct token is rejected once the IP is locked out.
+        resp = client.post("/protected", headers={"Authorization": "Bearer test-token-secure-123"})
+        assert resp.status_code == 429
+
+    def test_lockout_expires_after_failure_window(self, app, monkeypatch):
+        self._no_backoff(monkeypatch)
+        import src.api_auth as api_auth
+
+        clock = {"now": 1_000_000.0}
+        monkeypatch.setattr(api_auth, "_now", lambda: clock["now"])
+        client = TestClient(app)
+
+        for _ in range(5):
+            client.post("/protected", headers={"Authorization": "Bearer wrong"})
+        assert client.post("/protected", headers={"Authorization": "Bearer test-token-secure-123"}).status_code == 429
+
+        # Advance past the failure window: the IP is unlocked and a correct
+        # token succeeds again.
+        clock["now"] += api_auth._FAILURE_WINDOW + 1
+        resp = client.post("/protected", headers={"Authorization": "Bearer test-token-secure-123"})
+        assert resp.status_code == 200
+
+    def test_few_failures_do_not_lock_out(self, app, monkeypatch):
+        self._no_backoff(monkeypatch)
+        client = TestClient(app)
+
+        for _ in range(2):
+            client.post("/protected", headers={"Authorization": "Bearer wrong"})
+
+        resp = client.post("/protected", headers={"Authorization": "Bearer test-token-secure-123"})
+        assert resp.status_code == 200
