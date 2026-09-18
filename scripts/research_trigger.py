@@ -66,12 +66,22 @@ async def main() -> int:
         scores = persist_research_scores(results, store)
         print(f"Persisted {len(scores)} platform-certainty score(s) to DB")
 
-        # Record completion timestamp for dedup (shared with in-app scheduler).
-        # The in-app scheduler reads this same field to avoid double-firing.
+        # Append to the shared event log (issue #71). The in-app scheduler
+        # appends via SurvivalLoop._log_event inside main.py; this standalone
+        # script does the same when it wins the 6 h window claim (GH cron).
+        # Because the shared research-window claim lets exactly one runner
+        # fire per window, this single load-modify-write is single-writer and
+        # cannot race a second researcher.
+        events = store.load_events() or []
         for r in results:
             events.append(f"Research: {r.topic.value} (confidence {r.confidence:.2f})")
             print(f"Research: {r.topic.value} (confidence {r.confidence:.2f})")
         store.save_events(events)
+
+        # Record completion timestamp for the fast-path dedup check shared
+        # with the in-app scheduler: whichever runner won this window, the
+        # other path reads this field and skips while inside the 6 h window.
+        store.save_last_research_at(datetime.now(timezone.utc))
 
         print(f"Research cycle complete: {len(results)} topics")
         return 0

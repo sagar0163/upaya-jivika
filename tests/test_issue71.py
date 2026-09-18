@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timedelta, timezone
 
 from src.persistence import InMemoryStore, RESEARCH_DEDUP_WINDOW_HOURS, research_window_id
@@ -89,4 +89,38 @@ async def test_research_trigger_dedup(loop):
     with patch.object(loop.research, 'research_earning_platforms') as mock_research:
         await loop.research_trigger()
         mock_research.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_script_appends_events_and_records_dedup_timestamp():
+    """Standalone cron script must persist event-log entries and the
+    last_research_at dedup timestamp when it wins the research window,
+    otherwise the in-app scheduler's fast-path check never sees the run."""
+    import scripts.research_trigger as rt
+
+    store = InMemoryStore()
+    store.save_events(["existing event"])
+    assert store.load_last_research_at() is None
+
+    fake_topic = MagicMock()
+    fake_topic.value = "test_topic"
+    fake_result = MagicMock()
+    fake_result.topic = fake_topic
+    fake_result.confidence = 0.87
+    fake_result.summary = "A test finding"
+
+    fake_agent = MagicMock()
+    fake_agent.research_earning_platforms = AsyncMock(return_value=[fake_result])
+    fake_agent.close = AsyncMock()
+
+    with patch.object(rt, "create_persistence_store", return_value=store), \
+         patch.object(rt, "ResearchAgent", return_value=fake_agent), \
+         patch.object(rt, "persist_research_scores", return_value=[MagicMock()]):
+        rc = await rt.main()
+
+    assert rc == 0
+    events = store.load_events()
+    assert events[0] == "existing event"
+    assert "Research: test_topic (confidence 0.87)" in events
+    assert store.load_last_research_at() is not None
 
