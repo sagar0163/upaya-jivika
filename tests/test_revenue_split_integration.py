@@ -262,3 +262,55 @@ class TestOwnerPayoutIntegration:
         assert second is None
         assert loop.wallet.owner_owed == Decimal("20.00")
         assert len(loop.get_payout_records()) == 1
+
+    def test_failed_payout_recorded_in_audit_and_cold_archive(self, monkeypatch):
+        """A failed owner payout restores the earmark AND lands in the cold archive."""
+
+        store = InMemoryStore()
+        client, loop, _store = _client_with_loop(store)
+        policy_body = {
+            "tiers": [
+                {"min_balance": "0", "fractions": {"owner": "1", "reinvest": "0", "reserve": "0"}}
+            ],
+            "auto_payout_enabled": True,
+            "auto_payout_minimum": "10.00",
+            "auto_payout_cadence_hours": 24,
+            "seed_capital_repaid": "0.00",
+        }
+        client.post("/api/revenue-split/policy", json=policy_body, headers={"Authorization": "Bearer test-token"})
+
+        loop.wallet = Wallet(free=Decimal("0"), owner_owed=Decimal("25.00"))
+
+        from src.withdrawal import PayoutStatus, WithdrawalPool, WithdrawalResult
+
+        def _failing_payout(wallet, pool, amount, payout_client=None):
+            # Mirror real process_withdrawal: debit the pool before payout.
+            wallet.user_withdraw_owner_owed(amount)
+            return WithdrawalResult(
+                withdrawal_id="w_id_failed",
+                pool=WithdrawalPool.OWNER_OWED,
+                amount=Decimal("25.00"),
+                payout_status=PayoutStatus.FAILED,
+                detail="mock failure",
+            )
+
+        monkeypatch.setattr("src.withdrawal.process_withdrawal", _failing_payout)
+
+        archived = []
+        monkeypatch.setattr(loop.cold_archive, "append_event", lambda kind, data: archived.append((kind, data)))
+
+        record = loop.check_owner_payout()
+        assert record is not None
+        assert record.completed is False
+        assert record.error == "mock failure"
+
+        # Earmark restored so the next cadence retries
+        assert loop.wallet.owner_owed == Decimal("25.00")
+
+        # Audit trail keeps the failed attempt
+        records = loop.get_payout_records()
+        assert len(records) == 1
+        assert records[0].completed is False
+
+        # Cold archive receives the attempt even on failure
+        assert any(k == "owner_payout" and d["completed"] is False for k, d in archived)

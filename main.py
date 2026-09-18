@@ -386,11 +386,14 @@ class SurvivalLoop:
             f"Owner auto-payout: ${record.amount} "
             f"(id={record.payout_id}, completed={record.completed})"
         )
+        # Every attempt — success or failure — lands in the cold archive so a
+        # hot-memory wipe can't lose the payout trail (README: "recorded in
+        # the audit trail and cold archive even on failure").
+        self.cold_archive.append_event("owner_payout", record.to_dict())
         if record.completed:
             self._event_log.append(
                 f"Seed repayment progress: ${self.revenue_split_policy.seed_capital_repaid}"
             )
-            self.cold_archive.append_event("owner_payout", record.to_dict())
             self._persist_all()
             self._broadcast_event("owner_payout")
         logger.info(
