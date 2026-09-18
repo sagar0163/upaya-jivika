@@ -68,14 +68,6 @@ async def main() -> int:
 
         # Record completion timestamp for dedup (shared with in-app scheduler).
         # The in-app scheduler reads this same field to avoid double-firing.
-        store.save_last_research_at(datetime.now(timezone.utc))
-
-        # Persist results to the shared event log.
-        # NOTE: the event-log append for the LIVE app happens in
-        # main.SurvivalLoop.research_trigger — this standalone script
-        # only appends when called directly (GH Actions cron), since
-        # there is no live SurvivalLoop instance to consume the results.
-        events = store.load_events() or []
         for r in results:
             events.append(f"Research: {r.topic.value} (confidence {r.confidence:.2f})")
             print(f"Research: {r.topic.value} (confidence {r.confidence:.2f})")
