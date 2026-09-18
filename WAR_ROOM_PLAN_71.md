@@ -14,5 +14,5 @@
 
 - [x] Fix regression in `scripts/research_trigger.py`: `events` is undefined (NameError) and `save_last_research_at` was removed — restore both so the standalone cron path persists events and records the dedup timestamp
 - [x] Add regression test covering the script's event-log append + dedup timestamp write
-- [ ] Run full test suite + ruff; fix any failures
+- [x] Run full test suite + ruff; fix any failures
 - [ ] Remove plan file, final commit referencing #71, push branch
