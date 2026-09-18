@@ -128,7 +128,7 @@ class TestSpendEndpoints:
 
         resp = client.post(
             f"/api/spend/{result['spend_id']}/reject",
-            headers={"Authorization": "Bearer test-token"},
+            headers={"Authorization": "Bearer test-token-secure-123"},
         )
 
         assert resp.status_code == 200
@@ -139,7 +139,7 @@ class TestSpendEndpoints:
 
         resp = client.post(
             "/api/spend/nonexistent/reject",
-            headers={"Authorization": "Bearer test-token"},
+            headers={"Authorization": "Bearer test-token-secure-123"},
         )
 
         assert resp.status_code == 404

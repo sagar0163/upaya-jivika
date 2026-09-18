@@ -1,3 +1,6 @@
+import json
+import time
+import uuid
 """Tests for src/payoneer_webhook.py — signature verification and parsing."""
 
 import hashlib
@@ -21,25 +24,25 @@ def _sign(secret: str, body: bytes) -> str:
 class TestVerifySignature:
     def test_valid_signature_accepted(self):
         secret = "topsecret"
-        body = b'{"payment_id": "p1", "amount": "5.00", "status": "completed"}'
+        body = json.dumps({"timestamp": str(time.time()), "nonce": str(uuid.uuid4()), "payment_id": "p1", "amount": "5.00", "status": "completed"}).encode()
         sig = _sign(secret, body)
         assert verify_signature(secret, body, sig) is True
 
     def test_valid_signature_with_sha256_prefix_accepted(self):
         secret = "topsecret"
-        body = b'{"payment_id": "p1"}'
+        body = json.dumps({"timestamp": str(time.time()), "nonce": str(uuid.uuid4()), "payment_id": "p1"}).encode()
         sig = "sha256=" + _sign(secret, body)
         assert verify_signature(secret, body, sig) is True
 
     def test_wrong_secret_rejected(self):
-        body = b'{"payment_id": "p1"}'
+        body = json.dumps({"timestamp": str(time.time()), "nonce": str(uuid.uuid4()), "payment_id": "p1"}).encode()
         sig = _sign("correct", body)
         assert verify_signature("wrong", body, sig) is False
 
     def test_tampered_body_rejected(self):
         secret = "topsecret"
-        sig = _sign(secret, b'{"amount": "5.00"}')
-        assert verify_signature(secret, b'{"amount": "500.00"}', sig) is False
+        sig = _sign(secret, json.dumps({"timestamp": str(time.time()), "nonce": str(uuid.uuid4()), "amount": "5.00"}).encode())
+        assert verify_signature(secret, json.dumps({"timestamp": str(time.time()), "nonce": str(uuid.uuid4()), "amount": "500.00"}).encode(), sig) is False
 
     def test_missing_secret_rejected(self):
         body = b"{}"

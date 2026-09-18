@@ -37,7 +37,7 @@ class TestRequireApiToken:
     def test_malformed_header_rejected(self, app):
         client = TestClient(app)
 
-        resp = client.post("/protected", headers={"Authorization": "test-token"})
+        resp = client.post("/protected", headers={"Authorization": "test-token-secure-123"})
 
         assert resp.status_code == 401
 
@@ -51,14 +51,14 @@ class TestRequireApiToken:
     def test_correct_token_accepted(self, app):
         client = TestClient(app)
 
-        resp = client.post("/protected", headers={"Authorization": "Bearer test-token"})
+        resp = client.post("/protected", headers={"Authorization": "Bearer test-token-secure-123"})
 
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
 
     def test_correct_session_cookie_accepted(self, app):
         client = TestClient(app)
-        client.cookies.set("uj_session", "test-token")
+        client.cookies.set("uj_session", "test-token-secure-123")
 
         resp = client.post("/protected")
 
@@ -76,6 +76,6 @@ class TestRequireApiToken:
         client = TestClient(app)
         client.cookies.set("uj_session", "wrong")
 
-        resp = client.post("/protected", headers={"Authorization": "Bearer test-token"})
+        resp = client.post("/protected", headers={"Authorization": "Bearer test-token-secure-123"})
 
         assert resp.status_code == 200

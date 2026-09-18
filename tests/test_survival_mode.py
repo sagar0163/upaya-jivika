@@ -458,8 +458,8 @@ class TestSurvivalModeEndpoint:
         main_mod._loop = loop
         return TestClient(test_app)
 
-    #: Tests run with API_AUTH_TOKEN=test-token (set in tests/conftest.py).
-    _AUTH = {"Authorization": "Bearer test-token"}
+    #: Tests run with API_AUTH_TOKEN=test-token-secure-123 (set in tests/conftest.py).
+    _AUTH = {"Authorization": "Bearer test-token-secure-123"}
 
     def test_get_returns_current_mode(self):
         loop = _fresh_loop()

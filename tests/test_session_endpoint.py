@@ -23,7 +23,7 @@ def _client():
 class TestCreateSession:
     def setup_method(self):
         self._old = os.environ.get("API_AUTH_TOKEN")
-        os.environ["API_AUTH_TOKEN"] = "test-token"
+        os.environ["API_AUTH_TOKEN"] = "test-token-secure-123"
 
     def teardown_method(self):
         if self._old is None:
@@ -34,12 +34,12 @@ class TestCreateSession:
     def test_correct_token_sets_httponly_cookie(self):
         client = _client()
 
-        resp = client.post("/api/session", json={"token": "test-token"})
+        resp = client.post("/api/session", json={"token": "test-token-secure-123"})
 
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
         cookie = resp.cookies.get("uj_session")
-        assert cookie == "test-token"
+        assert cookie == "test-token-secure-123"
         set_cookie_header = resp.headers.get("set-cookie", "")
         assert "httponly" in set_cookie_header.lower()
         assert "samesite=strict" in set_cookie_header.lower()
@@ -53,7 +53,7 @@ class TestCreateSession:
 
         resp = client.post(
             "/api/session",
-            json={"token": "test-token"},
+            json={"token": "test-token-secure-123"},
             headers={"X-Forwarded-Proto": "https"},
         )
 
@@ -84,7 +84,7 @@ class TestCreateSession:
 
     def test_cookie_then_protected_endpoint_succeeds(self):
         client = _client()
-        session_resp = client.post("/api/session", json={"token": "test-token"})
+        session_resp = client.post("/api/session", json={"token": "test-token-secure-123"})
         assert session_resp.status_code == 200
 
         resp = client.post("/api/debt/tick")
@@ -104,7 +104,7 @@ class TestCreateSession:
 class TestLogoutSession:
     def setup_method(self):
         self._old = os.environ.get("API_AUTH_TOKEN")
-        os.environ["API_AUTH_TOKEN"] = "test-token"
+        os.environ["API_AUTH_TOKEN"] = "test-token-secure-123"
 
     def teardown_method(self):
         if self._old is None:
@@ -114,7 +114,7 @@ class TestLogoutSession:
 
     def test_logout_clears_cookie_and_revokes_access(self):
         client = _client()
-        client.post("/api/session", json={"token": "test-token"})
+        client.post("/api/session", json={"token": "test-token-secure-123"})
 
         logout_resp = client.post("/api/session/logout")
         assert logout_resp.status_code == 200

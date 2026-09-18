@@ -790,7 +790,7 @@ class TestDebtTickEndpoint:
         main_mod._loop = loop
 
         client = TestClient(test_app)
-        resp = client.post("/api/debt/tick", headers={"Authorization": "Bearer test-token"})
+        resp = client.post("/api/debt/tick", headers={"Authorization": "Bearer test-token-secure-123"})
 
         assert resp.status_code == 200
         body = resp.json()
@@ -821,12 +821,12 @@ class TestDebtTickEndpoint:
         client = TestClient(test_app)
 
         # First tick
-        resp1 = client.post("/api/debt/tick", headers={"Authorization": "Bearer test-token"})
+        resp1 = client.post("/api/debt/tick", headers={"Authorization": "Bearer test-token-secure-123"})
         assert resp1.status_code == 200
         assert resp1.json()["skipped"] is False
 
         # Second tick immediately - should be deduplicated
-        resp2 = client.post("/api/debt/tick", headers={"Authorization": "Bearer test-token"})
+        resp2 = client.post("/api/debt/tick", headers={"Authorization": "Bearer test-token-secure-123"})
         assert resp2.status_code == 200
         body2 = resp2.json()
         assert body2["skipped"] is True
@@ -859,7 +859,7 @@ class TestResearchTriggerEndpoint:
         main_mod._loop = loop
 
         client = TestClient(test_app)
-        resp = client.post("/api/research/trigger", headers={"Authorization": "Bearer test-token"})
+        resp = client.post("/api/research/trigger", headers={"Authorization": "Bearer test-token-secure-123"})
 
         assert resp.status_code == 200
         body = resp.json()

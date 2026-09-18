@@ -52,7 +52,7 @@ class TestWithdrawEndpoint:
         resp = client.post(
             "/api/withdraw",
             json={"pool": "free", "amount": "5.00"},
-            headers={"Authorization": "Bearer test-token"},
+            headers={"Authorization": "Bearer test-token-secure-123"},
         )
 
         assert resp.status_code == 200
@@ -69,7 +69,7 @@ class TestWithdrawEndpoint:
         resp = client.post(
             "/api/withdraw",
             json={"pool": "locked", "amount": "5.00"},
-            headers={"Authorization": "Bearer test-token"},
+            headers={"Authorization": "Bearer test-token-secure-123"},
         )
 
         assert resp.status_code == 200
@@ -83,7 +83,7 @@ class TestWithdrawEndpoint:
         resp = client.post(
             "/api/withdraw",
             json={"pool": "free", "amount": "5.00"},
-            headers={"Authorization": "Bearer test-token"},
+            headers={"Authorization": "Bearer test-token-secure-123"},
         )
 
         assert resp.status_code == 400
@@ -96,7 +96,7 @@ class TestWithdrawEndpoint:
         resp = client.post(
             "/api/withdraw",
             json={"pool": "free", "amount": "-5.00"},
-            headers={"Authorization": "Bearer test-token"},
+            headers={"Authorization": "Bearer test-token-secure-123"},
         )
 
         assert resp.status_code == 400
@@ -108,7 +108,7 @@ class TestWithdrawEndpoint:
         resp = client.post(
             "/api/withdraw",
             json={"pool": "vault", "amount": "5.00"},
-            headers={"Authorization": "Bearer test-token"},
+            headers={"Authorization": "Bearer test-token-secure-123"},
         )
 
         assert resp.status_code == 400
@@ -120,7 +120,7 @@ class TestWithdrawEndpoint:
         resp = client.post(
             "/api/withdraw",
             json={"pool": "free"},
-            headers={"Authorization": "Bearer test-token"},
+            headers={"Authorization": "Bearer test-token-secure-123"},
         )
 
         assert resp.status_code == 400
@@ -132,7 +132,7 @@ class TestWithdrawEndpoint:
         resp = client.post(
             "/api/withdraw",
             content=b"not json",
-            headers={"Content-Type": "application/json", "Authorization": "Bearer test-token"},
+            headers={"Content-Type": "application/json", "Authorization": "Bearer test-token-secure-123"},
         )
 
         assert resp.status_code == 400
@@ -148,7 +148,7 @@ class TestWithdrawEndpoint:
         resp = client.post(
             "/api/withdraw",
             json={"pool": "free", "amount": "5.00"},
-            headers={"Authorization": "Bearer test-token"},
+            headers={"Authorization": "Bearer test-token-secure-123"},
         )
 
         assert resp.status_code == 503
