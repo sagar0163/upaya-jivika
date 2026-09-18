@@ -21,6 +21,25 @@ from src.soul_crystal import LifeRecord, SoulCrystal
 
 logger = logging.getLogger(__name__)
 
+#: Research dedup window — only one full research cycle per 6 h window
+#: (issue #71). Mirrors the GH Actions cron cadence (``0 */6 * * *``).
+RESEARCH_DEDUP_WINDOW_HOURS = 6
+
+
+def research_window_id(now: datetime | None = None) -> str:
+    """Return the 6-hour research window bucket id for ``now``.
+
+    Two researchers running in the same UTC 6 h bucket share the same id,
+    so an atomic claim (see :meth:`PersistenceStore.try_claim_research_window`)
+    lets only one of them fire the full cycle. An id is cheap because it is
+    derived arithmetically rather than stored.
+    """
+    now = now or datetime.now(timezone.utc)
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    hours = int((now - epoch).total_seconds() // 3600)
+    window_hour = hours - (hours % RESEARCH_DEDUP_WINDOW_HOURS)
+    return f"r{window_hour}"
+
 
 # ---------------------------------------------------------------------------
 # Serialisation helpers
@@ -286,6 +305,28 @@ class PersistenceStore(ABC):
         """Return the persisted survival-mode value, or None if never set."""
 
     @abstractmethod
+    def save_last_research_at(self, ts: datetime) -> None:
+        """Persist the timestamp of the last completed research cycle.
+
+        Used by both the in-app scheduler and the GH Actions cron script to
+        deduplicate: only one runner fires per 6-hour window.
+        """
+
+    @abstractmethod
+    def load_last_research_at(self) -> Optional[datetime]:
+        """Return the timestamp of the last completed research cycle, or None."""
+
+    @abstractmethod
+    def try_claim_research_window(self, window_id: str) -> bool:
+        """Atomically reserve ``window_id`` for a research cycle.
+
+        Returns True the first time this 6-hour window is claimed, False if
+        already claimed (concurrently or earlier). Both the in-app scheduler
+        and GH Actions cron call this *before* running the expensive research
+        loop so two concurrent triggers cannot both fire a full cycle
+        (issue #71)."""
+
+    @abstractmethod
     def clear(self) -> None:
         """Reset hot-memory state while preserving the soul-crystal archive."""
 
@@ -386,10 +427,12 @@ class InMemoryStore(PersistenceStore):
         self._processed_payments: dict[str, dict[str, Any]] = {}
         self._research_scores: list[dict[str, Any]] = []
         self._payment_lock = threading.Lock()
+        self._research_lock = threading.Lock()
         self._blocked_platforms: dict[str, dict[str, Any]] = {}
         self._scammed_platforms: dict[str, dict[str, Any]] = {}
         self._pending_spends: dict[str, dict[str, Any]] = {}
         self._commitments: dict[str, dict[str, Any]] = {}
+        self._research_windows: set[str] = set()
 
     def save_debt_state(self, state: DebtState) -> None:
         self._debt_state = _debt_state_to_dict(state)
@@ -430,6 +473,19 @@ class InMemoryStore(PersistenceStore):
 
     def load_survival_mode(self) -> Optional[bool]:
         return self._survival_mode
+
+    def save_last_research_at(self, ts: datetime) -> None:
+        self._last_research_at = ts
+
+    def load_last_research_at(self) -> Optional[datetime]:
+        return getattr(self, "_last_research_at", None)
+
+    def try_claim_research_window(self, window_id: str) -> bool:
+        with self._research_lock:
+            if window_id in self._research_windows:
+                return False
+            self._research_windows.add(window_id)
+            return True
 
     def clear(self) -> None:
         # Preserve the permanent soul-crystal archive (§10 Layer 2/3): it must
@@ -599,6 +655,11 @@ class SupabaseStore(PersistenceStore):
             data  JSONB NOT NULL,
             created_at TIMESTAMPTZ DEFAULT now()
         );
+        CREATE TABLE IF NOT EXISTS research_windows (
+            id    TEXT PRIMARY KEY,
+            data  JSONB NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now()
+        );
         """
         try:
             self._client.rpc("exec_sql", {"query": ddl}).execute()
@@ -704,6 +765,29 @@ class SupabaseStore(PersistenceStore):
             return bool(d["enabled"])
         except (KeyError, TypeError, ValueError):
             return None
+
+    def save_last_research_at(self, ts: datetime) -> None:
+        self._upsert_row("app_settings", "last_research_at", {"ts": ts.isoformat()})
+
+    def load_last_research_at(self) -> Optional[datetime]:
+        d = self._load_row("app_settings", "last_research_at")
+        if d is None:
+            return None
+        try:
+            return datetime.fromisoformat(d["ts"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def try_claim_research_window(self, window_id: str) -> bool:
+        try:
+            self._client.table("research_windows").insert(
+                {"id": window_id, "data": {}}
+            ).execute()
+            return True
+        except Exception as e:
+            if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                return False
+            raise
 
     # -- lifecycle ----------------------------------------------------------
 

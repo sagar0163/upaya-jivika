@@ -73,6 +73,12 @@ EARNING_PLATFORMS = [EarningPlatform.CLICKWORKER]
 
 logger = logging.getLogger(__name__)
 
+#: Bounded in-memory event log (issue #71). Once exceeded, the oldest
+#: events are rolled into the cold archive and dropped from hot memory so a
+#: long-lived life does not accumulate an unbounded Python list that is
+#: re-persisted wholesale on every mutation.
+EVENT_LOG_MAX = 500
+
 
 # ---------------------------------------------------------------------------
 # WebSocket Manager
@@ -150,7 +156,12 @@ class SurvivalLoop:
         self.email_inbox = EmailInboxClient()
         self.approval_gate = ApprovalGate(self.persistence)
         self.bot_tracker = BotDetectionTracker(self.persistence)
-        self.audit_trail = AuditTrail()
+        self.audit_trail = AuditTrail(
+            on_overflow=lambda overflow: self.cold_archive.append_event(
+                "audit_trail_rollover",
+                {"entries": [e.model_dump() for e in overflow]},
+            )
+        )
         self.task_executor = TaskExecutor(
             wallet=self.wallet,
             vault=get_vault(),
@@ -166,7 +177,7 @@ class SurvivalLoop:
             persistence=self.persistence,
             audit_trail=self.audit_trail,
             cold_archive=self.cold_archive,
-            event_sink=lambda msg: self._event_log.append(msg),
+            event_sink=lambda msg: self._log_event(msg),
         )
         self.task_executor.delegation = self.delegation
 
@@ -181,6 +192,16 @@ class SurvivalLoop:
         self._event_log: list[str] = []
         self._running = False
         self.ancestral_memory: AncestralMemory | None = None
+
+        # Dirty flags for batch persistence — _persist_all() only writes
+        # entities that have actually changed since the last save, reducing
+        # the N separate Supabase round-trips per logical write (issue #71).
+        self._dirty: dict[str, bool] = {
+            "debt_state": True,
+            "wallet": True,
+            "life_record": True,
+            "events": True,
+        }
 
         # Issue #63: survival mode is an operator-facing, persisted toggle.
         # The env var is the boot-time default; once set via the API/UI it is
@@ -221,7 +242,7 @@ class SurvivalLoop:
         self._survival_mode = enabled
         self.persistence.save_survival_mode(enabled)
         logger.info("Survival mode set to %s (persisted)", enabled)
-        self._event_log.append(f"Survival mode {'enabled' if enabled else 'disabled'}")
+        self._log_event(f"Survival mode {'enabled' if enabled else 'disabled'}")
         self._persist_all()
         self._broadcast_event("survival_mode")
 
@@ -237,6 +258,21 @@ class SurvivalLoop:
                     asyncio.run(self.ws_manager.broadcast(status))
                 except RuntimeError:
                     pass
+
+    def _log_event(self, msg: str) -> None:
+        """Append to the in-memory event log and mark dirty for persistence.
+
+        Bounded in memory (issue #71): once :data:`EVENT_LOG_MAX` is
+        exceeded, the oldest events are rolled into the Layer 3 cold archive
+        and dropped from hot memory instead of ballooning without limit.
+        """
+        self._event_log.append(msg)
+        if len(self._event_log) > EVENT_LOG_MAX:
+            overflow = self._event_log[: (len(self._event_log) - EVENT_LOG_MAX)]
+            del self._event_log[: (len(self._event_log) - EVENT_LOG_MAX)]
+            self.cold_archive.append_event("event_log_rollover", {"events": overflow})
+            logger.debug("Rolled %d event(s) into cold archive", len(overflow))
+        self._dirty["events"] = True
 
     # -- persistence --------------------------------------------------------
 
@@ -322,17 +358,37 @@ class SurvivalLoop:
         self.delegation.wallet = self.wallet
         self._life_record = self.reincarnation.start_new_life(life_num)
         self._event_log = [f"Life {life_num} born"]
+        self._dirty = {
+            "debt_state": True,
+            "wallet": True,
+            "life_record": True,
+            "events": True,
+        }
         self._persist_all()
         self.cold_archive.begin_life(life_num)
         logger.info("Started new life: %d", life_num)
 
     def _persist_all(self) -> None:
-        """Persist all hot-memory state."""
-        self.persistence.save_debt_state(self.debt_engine.snapshot())
-        self.persistence.save_wallet(self.wallet)
-        if self._life_record:
+        """Persist only the hot-memory entities that have actually changed.
+
+        Dirty flags are set by callers when state mutates; this avoids
+        firing N separate Supabase round-trips when only one entity moved
+        (issue #71).
+        """
+        if self._dirty["debt_state"]:
+            self.persistence.save_debt_state(self.debt_engine.snapshot())
+        if self._dirty["wallet"]:
+            self.persistence.save_wallet(self.wallet)
+        if self._dirty["life_record"] and self._life_record:
             self.persistence.save_life_record(self._life_record)
-        self.persistence.save_events(self._event_log)
+        if self._dirty["events"]:
+            self.persistence.save_events(self._event_log)
+        self._dirty = {
+            "debt_state": False,
+            "wallet": False,
+            "life_record": False,
+            "events": False,
+        }
 
     # -- callbacks ----------------------------------------------------------
 
@@ -340,7 +396,9 @@ class SurvivalLoop:
         """Fired after every debt increment — persist and check state."""
         transition = self.state_machine.update(debt)
         self.wallet.debt = debt
-        self._event_log.append(f"Debt tick: ${debt}")
+        self._log_event(f"Debt tick: ${debt}")
+        self._dirty["wallet"] = True
+        self._dirty["debt_state"] = True
 
         # Layer 3 cold archive — every debt tick survives hot-memory wipe
         self.cold_archive.append_event(
@@ -351,7 +409,7 @@ class SurvivalLoop:
         self._broadcast_event("debt_tick")
 
         if transition:
-            self._event_log.append(
+            self._log_event(
                 f"State: {transition.previous.value} → {transition.current.value}"
             )
             self.cold_archive.append_event(
@@ -395,7 +453,7 @@ class SurvivalLoop:
             state.life_number,
             state.debt,
         )
-        self._event_log.append(
+        self._log_event(
             f"DEATH: debt ${state.debt}, life {state.life_number}"
         )
         self.cold_archive.append_event(
@@ -447,7 +505,7 @@ class SurvivalLoop:
         else:
             # Survival mode off — just end the agent, no reincarnation
             logger.info("Survival mode off — agent ending, no reincarnation")
-            self._event_log.append(
+            self._log_event(
                 f"END: debt ${state.debt}, life {state.life_number} "
                 "(survival mode off, no reincarnation)"
             )
@@ -463,7 +521,7 @@ class SurvivalLoop:
         (wallet, task queue, events, life record) is reset here.
         """
         logger.info("Reincarnating — resetting hot-memory state")
-        self._event_log.append("REINCARNATION")
+        self._log_event("REINCARNATION")
 
         # Reset modules
         new_life_num = self.reincarnation.next_life_number()
@@ -476,6 +534,12 @@ class SurvivalLoop:
         self.respawn.on_reincarnate()
         self._life_record = self.reincarnation.start_new_life(new_life_num)
         self._event_log = [f"Life {new_life_num} born"]
+        self._dirty = {
+            "debt_state": True,
+            "wallet": True,
+            "life_record": True,
+            "events": True,
+        }
 
         # Begin the new life in the cold archive (new JSONL shard)
         self.cold_archive.reset_for_new_life()
@@ -529,9 +593,44 @@ class SurvivalLoop:
         return self.debt_engine.tick_now()
 
     async def research_trigger(self) -> None:
-        """Run the research cycle asynchronously."""
+        """Run the research cycle asynchronously.
+
+        Deduplication (issue #71): uses both a fast timestamp check
+        (``last_research_at``) and an atomic window claim
+        (``try_claim_research_window``) so exactly one full cycle fires per
+        6-hour window whether the trigger is the in-app APScheduler, GH
+        Actions cron, or the API endpoint.
+        """
+        from datetime import timedelta as _td
+
+        from src.persistence import RESEARCH_DEDUP_WINDOW_HOURS, research_window_id
+
+        now = datetime.now(timezone.utc)
+
+        # Fast path: timestamp check avoids a DB round-trip when the last
+        # run is clearly still inside the 6 h dedup window.
+        last_at = self.persistence.load_last_research_at()
+        if last_at is not None and (now - last_at) < _td(hours=RESEARCH_DEDUP_WINDOW_HOURS):
+            logger.info(
+                "Research cycle skipped — last run at %s (within %sh dedup window)",
+                last_at.isoformat(),
+                RESEARCH_DEDUP_WINDOW_HOURS,
+            )
+            return
+
+        # Atomic claim: prevents two concurrent runners (app scheduler + GH
+        # cron firing in the same minute) from both starting a full cycle on
+        # the same 6 h bucket.
+        win_id = research_window_id(now)
+        if not self.persistence.try_claim_research_window(win_id):
+            logger.info(
+                "Research cycle skipped — window %s already claimed by concurrent runner",
+                win_id,
+            )
+            return
+
         try:
-            logger.info("Research cycle starting")
+            logger.info("Research cycle starting (window=%s)", win_id)
             results = await self.research.research_earning_platforms()
             persisted = persist_research_scores(results, self.persistence)
             logger.info(
@@ -540,7 +639,7 @@ class SurvivalLoop:
                 len(persisted),
             )
             for r in results:
-                self._event_log.append(
+                self._log_event(
                     f"Research: {r.topic.value} (confidence {r.confidence:.2f})"
                 )
                 self.cold_archive.append_event(
@@ -551,6 +650,7 @@ class SurvivalLoop:
                         "summary": r.summary,
                     },
                 )
+            self.persistence.save_last_research_at(datetime.now(timezone.utc))
             self._persist_all()
             if self.ws_manager:
                 status = self.get_status()
@@ -613,7 +713,7 @@ class SurvivalLoop:
                     "amount_earned": str(result.amount_earned),
                 }
                 results.append(entry)
-                self._event_log.append(
+                self._log_event(
                     f"Task {result.task_id} on {result.candidate.platform.value}: "
                     f"{'earned $' + str(result.amount_earned) if result.success else result.error}"
                 )
@@ -630,11 +730,24 @@ class SurvivalLoop:
         return results
 
     def survival_tick(self) -> None:
-        """Periodic state-machine sync (runs every minute)."""
+        """Periodic state-machine sync (runs every minute).
+
+        Persists only when something actually changed (state transition,
+        resolved spend, confirmed scam, expired delegation) — never on the
+        wall clock alone (issue #71).
+        """
         if not self.debt_engine.alive:
             return
-        self.state_machine.update(self.debt_engine.debt)
-        self.wallet.debt = self.debt_engine.debt
+
+        transition = self.state_machine.update(self.debt_engine.debt)
+        if self.wallet.debt != self.debt_engine.debt:
+            self.wallet.debt = self.debt_engine.debt
+            self._dirty["wallet"] = True
+            self._dirty["debt_state"] = True
+        if transition:
+            self._log_event(
+                f"State: {transition.previous.value} → {transition.current.value}"
+            )
         try:
             self.resolve_pending_spends()
         except Exception:
@@ -651,11 +764,12 @@ class SurvivalLoop:
                 debt=self.wallet.debt,
             )
             for refund in refunds:
-                self._event_log.append(
+                self._log_event(
                     f"Delegation {refund['commitment_id']} expired — "
                     f"${refund['escrow_refunded']} refunded to free pool"
                 )
             if refunds:
+                self._dirty["wallet"] = True
                 self._persist_all()
         except Exception:
             logger.exception("Delegation expiry failed — will retry next tick")
@@ -722,6 +836,7 @@ class SurvivalLoop:
             return {"processed": False, "reason": "duplicate", "payment_id": event.payment_id}
 
         breakdown = self.wallet.credit_earned(event.amount)
+        self._dirty["wallet"] = True
         self.persistence.mark_payment_processed(
             event.payment_id,
             {
@@ -732,7 +847,7 @@ class SurvivalLoop:
                 "to_free": str(breakdown["to_free"]),
             },
         )
-        self._event_log.append(
+        self._log_event(
             f"Payment confirmed: {event.payment_id} ${event.amount} "
             f"(debt_repaid=${breakdown['debt_repaid']}, to_free=${breakdown['to_free']})"
         )
@@ -789,8 +904,9 @@ class SurvivalLoop:
         reversal: dict[str, Decimal] | None = None
         if event.scam_type.value == "chargeback" and event.amount_lost > 0:
             reversal = self.scam_tracker.resolve_chargeback(self.wallet, event.amount_lost)
+            self._dirty["wallet"] = True
 
-        self._event_log.append(
+        self._log_event(
             f"Scam confirmed: {event.platform} ({event.scam_type.value}) — {event.lesson or 'no lesson recorded'}"
         )
         self.cold_archive.append_event("scam_confirmed", event.to_dict())
@@ -870,7 +986,7 @@ class SurvivalLoop:
                 continue
             entry = {"sender": msg.sender, "subject": msg.subject}
             found.append(entry)
-            self._event_log.append(f"Payment alert email: {msg.subject} (from {msg.sender})")
+            self._log_event(f"Payment alert email: {msg.subject} (from {msg.sender})")
             self.cold_archive.append_event("payment_alert_email", entry)
             try:
                 self.email_inbox.mark_as_read(msg.uid)
@@ -906,7 +1022,8 @@ class SurvivalLoop:
         aren't configured.
         """
         result = process_withdrawal(self.wallet, pool, amount)
-        self._event_log.append(
+        self._dirty["wallet"] = True
+        self._log_event(
             f"Withdrawal: {result.pool.value} pool -${result.amount} "
             f"(payout={result.payout_status.value})"
         )
@@ -938,12 +1055,13 @@ class SurvivalLoop:
 
         if decision is SpendDecision.EXECUTED_IMMEDIATELY:
             debited = self.wallet.ai_spend(SpendRequest(amount=amount, certainty=certainty))
-            self._event_log.append(f"AI spend executed: ${debited} — {reason}")
+            self._dirty["wallet"] = True
+            self._log_event(f"AI spend executed: ${debited} — {reason}")
             self._persist_all()
             return {"status": decision.value, "amount": str(debited), "reason": reason}
 
         assert pending is not None  # PENDING always returns a PendingSpend
-        self._event_log.append(
+        self._log_event(
             f"AI spend request pending veto (deadline {pending.veto_deadline.isoformat()}): "
             f"${amount} — {reason}"
         )
@@ -967,7 +1085,7 @@ class SurvivalLoop:
         """User vetoes a pending AI spend before its window elapses."""
         rejected = self.approval_gate.reject(spend_id)
         if rejected:
-            self._event_log.append(f"AI spend request {spend_id} rejected by user")
+            self._log_event(f"AI spend request {spend_id} rejected by user")
             self._persist_all()
             self._broadcast_event("spend_request_rejected")
         return rejected
@@ -986,7 +1104,8 @@ class SurvivalLoop:
                 try:
                     debited = self.wallet.ai_spend(SpendRequest(amount=pending.amount, certainty=pending.certainty))
                     entry["amount"] = str(debited)
-                    self._event_log.append(f"AI spend auto-approved after veto window: ${debited} — {pending.reason}")
+                    self._dirty["wallet"] = True
+                    self._log_event(f"AI spend auto-approved after veto window: ${debited} — {pending.reason}")
                     # Issue #76: if this spend funds a delegation commitment,
                     # re-tag the debit as escrow-held (not spent).
                     if self.delegation.finalize_pending_funding(
@@ -996,14 +1115,14 @@ class SurvivalLoop:
                         debt=self.wallet.debt,
                     ):
                         entry["escrow_held"] = str(debited)
-                        self._event_log.append(
+                        self._log_event(
                             f"Delegation {pending.spend_id}: ${debited} escrow held after veto approval"
                         )
                 except WalletError as exc:
                     entry["error"] = str(exc)
-                    self._event_log.append(f"AI spend {pending.spend_id} auto-approval failed: {exc}")
+                    self._log_event(f"AI spend {pending.spend_id} auto-approval failed: {exc}")
             else:
-                self._event_log.append(f"AI spend {pending.spend_id} was rejected — ${pending.amount} not spent")
+                self._log_event(f"AI spend {pending.spend_id} was rejected — ${pending.amount} not spent")
             results.append(entry)
 
         if results:
@@ -1031,6 +1150,7 @@ class SurvivalLoop:
             survival_state=self.state_machine.state.value,
             debt=self.wallet.debt,
         )
+        self._dirty["wallet"] = True
         self._persist_all()
         self._broadcast_event("delegation_created")
         return result.model_dump()
@@ -1045,6 +1165,7 @@ class SurvivalLoop:
             commitment_id,
             verification=verification if verification else "",
         )
+        self._dirty["wallet"] = True
         self._persist_all()
         self._broadcast_event("escrow_released")
         return {"released": True, "commitment_id": commitment_id, "amount": str(amount)}
@@ -1056,6 +1177,7 @@ class SurvivalLoop:
             debt=self.wallet.debt,
         )
         if refunds:
+            self._dirty["wallet"] = True
             self._persist_all()
             self._broadcast_event("delegation_expired")
         return refunds
